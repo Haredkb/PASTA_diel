@@ -14,14 +14,14 @@ Core functions live in pasta_diel.py (Python port of
 DielPASTA_Share/R/PASTA_dielAnalysisFunctions.R).
 """
 
-# -- Auto-install missing packages from requirements_diel_pasta_app.txt --------
+# -- Auto-install missing packages from requirements.txt --------
 import importlib
 import subprocess
 import sys
 import os
 from pathlib import Path
 
-_REQUIREMENTS_FILE = Path(__file__).parent / "requirements_diel_pasta_app.txt"
+_REQUIREMENTS_FILE = Path(__file__).parent / "requirements.txt"
 
 
 def _check_and_install():

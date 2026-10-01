@@ -11,11 +11,22 @@ packages (no admin). After that it launches straight away at http://localhost:85
 
 Set the environment variable `DIEL_PASTA_DATA` to a folder path to pre-fill the folder box.
 
-Or, from any Python with the packages in `requirements_diel_pasta_app.txt`:
+Or, from any Python with the packages in `requirements.txt`:
 
 ```
 streamlit run diel_pasta_app.py
 ```
+
+## Share online (Streamlit Community Cloud)
+
+1. Go to https://share.streamlit.io and sign in with GitHub.
+2. **Create app** → *Deploy a public app from GitHub* → repository `Haredkb/PASTA_diel`, branch `main`,
+   main file `diel_pasta_app.py` → **Deploy**.
+3. Share the `*.streamlit.app` link. Because the GitHub repo is private, the app is private too: invite
+   viewers by email under **Share** in the app's top-right menu, or make the repo public to allow anyone.
+
+On the cloud only **Upload CSV files** works (the server can't see your local folders), and results come
+back through the download buttons. **Save to folder** writes to the server, not your computer.
 
 ## Workflow
 
@@ -64,5 +75,5 @@ Ratio_Mean_K match `EG_dielPASTA_metrics.csv` on all 649 rows.
 |---|---|
 | `diel_pasta_app.py` | Streamlit UI |
 | `pasta_diel.py` | Parsing, classification, pairing, sinusoid fits, metrics (no Streamlit) |
-| `requirements_diel_pasta_app.txt` | Packages (auto-installed on launch if missing) |
+| `requirements.txt` | Packages (auto-installed on launch if missing) |
 | `run_diel_pasta.bat` | Windows launcher with its own venv |
