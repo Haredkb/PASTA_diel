@@ -80,6 +80,13 @@ def parse_logger_csv(file_bytes, fname):
     t_col = next((c for c in cols if "temp" in c.lower()), None)
     if t_col is None:
         t_col = next((c for c in cols if "value" in c.lower()), None)
+    if t_col is None:
+        # e.g. 'Timestamp (UTC-05:00),LLC_LLC01_AT': the one numeric column
+        # that is not the timestamp or a HOBO '#' row counter
+        num = [c for c in cols if c != ts_col and c.strip() != "#"
+               and pd.to_numeric(df[c], errors="coerce").notna().mean() > 0.5]
+        if len(num) == 1:
+            t_col = num[0]
     if ts_col is None or t_col is None:
         raise ValueError(
             "Could not find a date/time column and a temperature column in "
@@ -100,7 +107,7 @@ def parse_logger_csv(file_bytes, fname):
     if len(out) < 10:
         raise ValueError("Fewer than 10 valid temperature records in " + str(fname))
 
-    tz = re.search(r"\(([A-Z]{2,5}|GMT[^)]*)\)", ts_col)
+    tz = re.search(r"\(([A-Z]{2,5}|(?:GMT|UTC)[^)]*)\)", ts_col)
     out.attrs["tz_label"] = tz.group(1) if tz else ""
     return out
 
@@ -116,8 +123,9 @@ def to_grid(df, interval_min=15):
 #  2. Classification
 # ==============================================================================
 
-_AIR_NAME = re.compile(r"(^|[^a-z])(air|atm|atmo)([^a-z]|$)", re.IGNORECASE)
-_WAT_NAME = re.compile(r"(^|[^a-z])(str|stream|wat|water|sw|riv|river)([^a-z]|$)",
+# Name tokens (bounded by non-letters): AT = air temperature, WT = water temperature
+_AIR_NAME = re.compile(r"(^|[^a-z])(air|atm|atmo|at)([^a-z]|$)", re.IGNORECASE)
+_WAT_NAME = re.compile(r"(^|[^a-z])(str|stream|wat|water|wt|sw|riv|river)([^a-z]|$)",
                        re.IGNORECASE)
 
 
@@ -184,8 +192,28 @@ def _digits(name):
     return re.findall(r"\d+", name)
 
 
+def _type_stem(name):
+    """Name with the air/water token removed: 'LLC_LLC01_AT_corrected' -> 'llc_llc01__corrected'."""
+    n = _AIR_NAME.sub(lambda m: m.group(1) + m.group(3), name)
+    n = _WAT_NAME.sub(lambda m: m.group(1) + m.group(3), n)
+    return n.lower()
+
+
+def site_label(stream_name):
+    """Default site ID: 'LLC_LLC01_WT_corrected' -> 'LLC_LLC01'; 'HF-003' stays 'HF-003'."""
+    n = _WAT_NAME.sub(lambda m: m.group(1) + m.group(3), stream_name)
+    n = re.sub(r"(^|[_\-\s])(corrected|raw|qc|final|clean|data)(?=$|[_\-\s])", r"\1", n,
+               flags=re.IGNORECASE)
+    n = re.sub(r"[_\-\s]{2,}", "_", n).strip("_- ")
+    return n or stream_name
+
+
 def name_match(stream_name, air_name):
-    """True when the loggers look like a named pair (HF_003 <-> HF_103, AMTH_A01 <-> AMTH_air)."""
+    """True when the loggers look like a named pair
+    (LLC01_WT <-> LLC01_AT, HF_003 <-> HF_103, AMTH_A01 <-> AMTH_air)."""
+    typed = _AIR_NAME.search(air_name) or _WAT_NAME.search(stream_name)
+    if typed and _type_stem(stream_name) == _type_stem(air_name):
+        return True
     sd, ad = _digits(stream_name), _digits(air_name)
     if sd and ad and len(sd[-1]) >= 2 and len(ad[-1]) >= 2 and sd[-1][-2:] == ad[-1][-2:]:
         return True
