@@ -5,3 +5,7 @@ __pycache__/
 output/
 dielPASTA_output/
 *.log
+*.egg-info/
+build/
+dist/
+.pytest_cache/

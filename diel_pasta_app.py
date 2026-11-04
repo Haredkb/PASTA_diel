@@ -13,8 +13,7 @@ suggests air-stream pairs, then runs either or both analyses:
 Usage:
     streamlit run diel_pasta_app.py        (or double-click run_diel_pasta.bat)
 
-Core functions: pasta_diel.py (port of DielPASTA_Share/R/PASTA_dielAnalysisFunctions.R)
-and pasta_annual.py (port of the PASTA Shiny app's annual-signal R functions).
+Analysis code lives in the pasta_signals package (run_annual, run_diel); see README.
 """
 
 # -- Auto-install missing packages from requirements.txt --------
@@ -57,6 +56,7 @@ if _check_and_install():
 
 import io
 import hashlib
+import zipfile
 import datetime as _dt
 
 import streamlit as st
@@ -67,8 +67,8 @@ from plotly.subplots import make_subplots
 import plotly.io as pio
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import pasta_diel as pdl
-import pasta_annual as pa
+import pasta_signals as ps
+from pasta_signals import annual as an, diel as dl, pairing as pr, readers as rd
 
 pio.templates.default = "plotly_white"
 
@@ -110,9 +110,9 @@ st.set_page_config(
 @st.cache_data(show_spinner=False, max_entries=200)
 def _load_logger(file_bytes, fname, interval_min):
     """Parse + grid one logger file and compute its features (cached on bytes)."""
-    raw = pdl.parse_logger_csv(file_bytes, fname)
-    grid = pdl.to_grid(raw, interval_min)
-    feats = pdl.logger_features(grid)
+    raw = rd.parse_logger_csv(file_bytes, fname)
+    grid = rd.to_grid(raw, interval_min)
+    feats = pr.logger_features(grid)
     feats["tz_label"] = raw.attrs.get("tz_label", "")
     return grid, feats
 
@@ -130,7 +130,7 @@ def _pair_scores(sig, _grids, streams, airs, interval_min):
     out = {}
     for s in streams:
         for a in airs:
-            out[(s, a)] = pdl.diel_xcorr(_grids[s], _grids[a], interval_min)
+            out[(s, a)] = pr.diel_xcorr(_grids[s], _grids[a], interval_min)
     return out
 
 
@@ -142,6 +142,87 @@ def _overview_frame(sig, _grids, names):
         s = _downsample(_grids[n])
         parts.append(pd.DataFrame({"timestamp": s.index, "temp_C": s.to_numpy(), "logger": n}))
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def _coverage(sig, _grids, pairs, interval_min):
+    """Start / end of each logger and of the paired (both present) record, per site."""
+    per_day = 24 * 60 / interval_min
+    rows = []
+    for sid, s, a in pairs:
+        gs, ga = _grids[s].dropna(), _grids[a].dropna()
+        both = gs.index.intersection(ga.index)
+        rows.append({"site_id": sid, "stream": s, "air": a,
+                     "stream_start": gs.index.min(), "stream_end": gs.index.max(),
+                     "air_start": ga.index.min(), "air_end": ga.index.max(),
+                     "paired_start": both.min() if len(both) else pd.NaT,
+                     "paired_end": both.max() if len(both) else pd.NaT,
+                     "paired_days": len(both) / per_day,
+                     "paired_index": both})
+    return pd.DataFrame(rows)
+
+
+def _coverage_in_range(cov, dr0, dr1):
+    """Per site: paired days inside [dr0, dr1) and whether the site spans the range."""
+    out = cov.drop(columns=["paired_index"]).copy()
+    n_days = max((dr1 - dr0).days, 1)
+    tol = pd.Timedelta(days=1)
+    in_range, status = [], []
+    for r in cov.itertuples():
+        idx = r.paired_index
+        k = idx[(idx >= dr0) & (idx < dr1)]
+        days = len(pd.unique(k.normalize())) if len(k) else 0
+        in_range.append(days)
+        if days == 0:
+            status.append("no data in range")
+        elif r.paired_start > dr0 + tol and r.paired_end < dr1 - 2 * tol:
+            status.append("starts late and ends early")
+        elif r.paired_start > dr0 + tol:
+            status.append("starts {}".format(r.paired_start.date()))
+        elif r.paired_end < dr1 - 2 * tol:
+            status.append("ends {}".format(r.paired_end.date()))
+        elif days < 0.9 * n_days:
+            status.append("gaps inside range")
+        else:
+            status.append("covers whole range")
+    out["days_in_range"] = in_range
+    out["pct_of_range"] = [100 * d / n_days for d in in_range]
+    out["status"] = status
+    return out
+
+
+def _coverage_plot(cov, dr0, dr1):
+    fig = go.Figure()
+    fig.add_vrect(x0=dr0, x1=dr1, fillcolor="rgba(31,119,180,0.08)", line_width=0,
+                  annotation_text="selected range", annotation_position="top left")
+    for r in cov.itertuples():
+        for y_off, start, end, col, nm in ((0.18, r.air_start, r.air_end, AIR_COLOR, "air"),
+                                           (0.0, r.paired_start, r.paired_end, "#333333", "paired"),
+                                           (-0.18, r.stream_start, r.stream_end, WATER_COLOR, "stream")):
+            if pd.isna(start):
+                continue
+            fig.add_trace(go.Scatter(x=[start, end], y=[r.site_id, r.site_id], mode="lines",
+                                     line={"color": col, "width": 9 if nm == "paired" else 4},
+                                     name=nm, legendgroup=nm, showlegend=(r.Index == 0),
+                                     hovertemplate=nm + ": %{x|%Y-%m-%d}<extra>" + r.site_id + "</extra>"))
+    fig.update_layout(height=max(160, 46 * len(cov) + 80),
+                      margin={"l": 20, "r": 20, "t": 30, "b": 20},
+                      legend={"orientation": "h", "y": 1.12})
+    st.plotly_chart(fig, width="stretch")
+
+
+def _clean_out_dir(raw):
+    """User-typed folder -> absolute Path. Accepts quotes (Copy as path), ~, %VARS%."""
+    txt = os.path.expandvars(str(raw).strip().strip('"').strip("'").strip())
+    if not txt:
+        raise ValueError("Type a folder path, e.g. C:\\Users\\you\\Documents\\PASTA_output")
+    if os.name != "nt" and len(txt) > 1 and txt[1] == ":":
+        raise ValueError("This app is running on a server, not on your computer, so it cannot "
+                         "save to " + txt + ". Use **Download all (.zip)** instead.")
+    path = Path(txt).expanduser()
+    if os.name == "nt" and path.drive and not Path(path.drive + "\\").exists():
+        raise ValueError("Drive " + path.drive + " was not found.")
+    return path.resolve()
 
 
 @st.cache_data(show_spinner=False)
@@ -218,7 +299,7 @@ if not files:
 
 grids, feats_rows, errors = {}, [], []
 for fname, b in files:
-    name = pdl.logger_name_from_filename(fname)
+    name = rd.logger_name_from_filename(fname)
     if name in grids:  # two files with the same logger name -> keep both, disambiguate
         name = Path(fname).stem
     try:
@@ -227,7 +308,7 @@ for fname, b in files:
         errors.append("**" + fname + "**: " + str(exc))
         continue
     grids[name] = g
-    kind, conf, why = pdl.classify_logger(name, f)
+    kind, conf, why = pr.classify_logger(name, f)
     feats_rows.append({"logger": name, "file": fname, **f,
                        "auto_type": kind, "confidence": conf, "reason": why})
 for e in errors:
@@ -309,30 +390,26 @@ if not airs or not streams:
 st.markdown("---")
 st.subheader("3 - Air-stream pairs")
 st.caption(
-    "Each stream logger is paired with one air logger. Suggestions use matching "
-    "numbers in the names first (HF_003 ↔ HF_103), then the diel correlation: how "
-    "closely the stream's daily cycle follows the air's, allowing a 0–6 h lag. "
+    "Each stream logger is paired with one air logger. **Names are checked first**, "
+    "strongest rule first: the same name apart from the air/stream code "
+    "(AT_002 ↔ ST_002, LLC01_AT ↔ LLC01_WT), then the same site name and number, "
+    "the same number, the same last two digits (HF_003 ↔ HF_103), and the same prefix. "
+    "The data is used only as a last resort: for streams with no name match, or to choose "
+    "between several air loggers that match equally well. It uses the diel correlation, "
+    "i.e. how closely the stream's daily cycle follows the air's (0–6 h lag). "
     "One air logger can serve several streams. Change **Air logger** to override."
 )
 
 score_sig = _sig(tuple(sorted((f, len(b)) for f, b in files)), interval_min)
 scores = _pair_scores(score_sig, grids, tuple(streams), tuple(airs), int(interval_min))
-suggest = pdl.suggest_pairs(streams, airs, {k: v[0] for k, v in scores.items()})
+suggest = pr.suggest_pairs(streams, airs, {k: v[0] for k, v in scores.items()})
 
 pair_rows = []
 for s in streams:
     a, basis = suggest[s]
-    rs = sorted((scores[(s, x)][0] for x in airs if np.isfinite(scores[(s, x)][0])), reverse=True)
-    if basis == "name match":
-        check = "name match"
-    elif len(rs) > 1 and rs[0] - rs[1] < 0.02:
-        check = "confirm (air loggers score alike)"
-    elif rs and rs[0] < 0.3:
-        check = "confirm (weak diel link)"
-    else:
-        check = "data"
+    check = pr.basis_note(s, a, basis, airs, {k: v[0] for k, v in scores.items()})
     r, lag, days = scores.get((s, a), (np.nan, np.nan, np.nan)) if a else (np.nan, np.nan, np.nan)
-    pair_rows.append({"include": a is not None, "site_id": pdl.site_label(s), "stream": s, "air": a,
+    pair_rows.append({"include": a is not None, "site_id": pr.site_label(s), "stream": s, "air": a,
                       "basis": check, "diel_r": r, "lag_h": lag, "overlap_days": days})
 pairs_df = pd.DataFrame(pair_rows)
 _dup = pairs_df["site_id"].duplicated(keep=False)          # shortened labels collided
@@ -346,7 +423,8 @@ pairs_edit = st.data_editor(
         "stream": st.column_config.TextColumn("Stream logger", disabled=True),
         "air": st.column_config.SelectboxColumn("Air logger", options=airs, required=True),
         "basis": st.column_config.TextColumn("Suggested by", disabled=True),
-        "diel_r": st.column_config.NumberColumn("Diel r (suggested)", format="%.3f", disabled=True),
+        "diel_r": st.column_config.NumberColumn("Diel r", format="%.3f", disabled=True,
+                                                help="Diel correlation of the suggested pair"),
         "lag_h": st.column_config.NumberColumn("Lag (h)", format="%.2f", disabled=True),
         "overlap_days": st.column_config.NumberColumn("Overlap (d)", format="%.1f", disabled=True),
     },
@@ -407,13 +485,73 @@ if not analyses:
     st.info("Select at least one analysis.")
     st.stop()
 
+pair_list = [(r.site_id, r.stream, r.air) for r in sel_pairs.itertuples()]
+cov = _coverage(_sig(score_sig, tuple(pair_list)), grids, tuple(pair_list), int(interval_min))
+
+st.markdown("#### Date range")
+range_mode = st.radio(
+    "Date range", ["All data", "Common period (all sites)", "Custom"], horizontal=True,
+    key="range_mode", label_visibility="collapsed",
+    help="**All data**: every site uses its full paired record. **Common period**: only "
+         "dates where every selected site has paired air and stream data. **Custom**: pick dates.")
+c_first, c_last = cov["paired_start"].min(), cov["paired_end"].max()
+common0, common1 = cov["paired_start"].max(), cov["paired_end"].min()
+if range_mode == "All data":
+    dr0, dr1 = c_first.normalize(), c_last.normalize() + pd.Timedelta(days=1)
+elif range_mode == "Common period (all sites)":
+    if common0 >= common1:
+        st.error("No period is shared by all selected sites. Choose **All data**, "
+                 "**Custom**, or untick sites in the pair table.")
+        st.stop()
+    dr0, dr1 = common0.normalize(), common1.normalize() + pd.Timedelta(days=1)
+else:
+    d0, d1 = c_first.date(), c_last.date()
+    date_range = st.date_input("Custom dates", value=(d0, d1), min_value=d0, max_value=d1,
+                               key="custom_dates")
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        dr0, dr1 = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1]) + pd.Timedelta(days=1)
+    else:
+        dr0, dr1 = pd.Timestamp(d0), pd.Timestamp(d1) + pd.Timedelta(days=1)
+
+cov_view = _coverage_in_range(cov, dr0, dr1)
+n_full = int((cov_view["status"] == "covers whole range").sum())
+range_txt = "{} to {} ({} days)".format(dr0.date(), (dr1 - pd.Timedelta(days=1)).date(),
+                                        (dr1 - dr0).days)
+if n_full == len(cov_view):
+    st.success("All {} sites have paired data across the whole range: {}.".format(
+        len(cov_view), range_txt))
+else:
+    short = cov_view[cov_view["status"] != "covers whole range"]
+    st.warning(
+        "The range {} is **not covered by all sites**: {} of {} sites have data for only "
+        "part of it ({}). Sites will be analysed over different periods, so their annual "
+        "metrics may not be comparable. Choose **Common period (all sites)** to use only the "
+        "dates every site shares.".format(
+            range_txt, len(short), len(cov_view),
+            ", ".join("{} ({})".format(r.site_id, r.status) for r in short.itertuples())))
+with st.expander("Data coverage by site", expanded=n_full < len(cov_view)):
+    _coverage_plot(cov, dr0, dr1)
+    st.dataframe(cov_view, hide_index=True, width="stretch",
+                 column_config={
+                     "stream_start": st.column_config.DatetimeColumn("Stream start", format="YYYY-MM-DD"),
+                     "stream_end": st.column_config.DatetimeColumn("Stream end", format="YYYY-MM-DD"),
+                     "air_start": st.column_config.DatetimeColumn("Air start", format="YYYY-MM-DD"),
+                     "air_end": st.column_config.DatetimeColumn("Air end", format="YYYY-MM-DD"),
+                     "paired_start": st.column_config.DatetimeColumn("Paired start", format="YYYY-MM-DD"),
+                     "paired_end": st.column_config.DatetimeColumn("Paired end", format="YYYY-MM-DD"),
+                     "paired_days": st.column_config.NumberColumn("Paired days (all)", format="%.0f"),
+                     "days_in_range": st.column_config.NumberColumn("Paired days in range", format="%.0f"),
+                     "pct_of_range": st.column_config.NumberColumn("% of range", format="%.0f"),
+                 })
+    st.caption("Paired = times with both the stream and the air record. Common period "
+               "for all sites: {}.".format(
+                   "{} to {}".format(common0.date(), common1.date()) if common0 < common1
+                   else "none"))
+
 with st.expander("Settings", expanded=True):
     s1, s2, s3 = st.columns(3)
     with s1:
         st.markdown("**Both**")
-        all_times = pd.concat([feats["start"], feats["end"]])
-        d0, d1 = all_times.min().date(), all_times.max().date()
-        date_range = st.date_input("Date range", value=(d0, d1), min_value=d0, max_value=d1)
         water_min = st.number_input(
             "Drop stream records ≤ (°C)", value=0.99, step=0.01, format="%.2f",
             help="R: filter(str_temp > 0.99). Removes ice-affected / out-of-water records. "
@@ -442,12 +580,6 @@ with st.expander("Settings", expanded=True):
         st.caption("Diel phase uses the logger clock time as written. The R `rad_hour()` "
                    "converts to the computer's time zone, which shifts phase by 1 h across DST.")
 
-if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-    dr0, dr1 = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1]) + pd.Timedelta(days=1)
-else:
-    dr0, dr1 = pd.Timestamp(d0), pd.Timestamp(d1) + pd.Timedelta(days=1)
-
-pair_list = [(r.site_id, r.stream, r.air) for r in sel_pairs.itertuples()]
 run_sig = _sig(score_sig, tuple(pair_list), tuple(analyses), water_min, min_cov, yr_type,
                min_days, r2_min, roll_k, str(dr0), str(dr1))
 
@@ -460,20 +592,24 @@ if st.button("Run PASTA", type="primary"):
     with st.spinner("Fitting sinusoids..."):
         try:
             clipped = {n: g[(g.index >= dr0) & (g.index < dr1)] for n, g in grids.items()}
-            T_y = pdl.build_paired_df(pair_list, clipped, water_min_C=water_min)
+            data = ps.pair_data(clipped, pair_list)
+            T_y = data[data["str_temp"] > water_min].reset_index(drop=True)
             res = {"T_y": T_y, "analyses": list(analyses), "yr_type": yr_type,
-                   "min_days": int(min_days)}
+                   "min_days": int(min_days),
+                   "pairs": sel_pairs.drop(columns=["include"]).reset_index(drop=True),
+                   "coverage": cov_view}
 
             if do_diel:
-                fits = pdl.fit_daily_sinusoids(T_y, min_coverage=min_cov / 100,
-                                               interval_min=int(interval_min))
-                metrics = pdl.pasta_metrics(fits, r2_min=r2_min, roll_k=int(roll_k))
+                dres = ps.run_diel(data, interval_min=int(interval_min), water_min_C=water_min,
+                                   min_coverage=min_cov / 100, r2_min=r2_min, roll_k=int(roll_k))
+                fits, metrics = dres.fits, dres.metrics
                 res.update(fits=fits, metrics=metrics)
             if do_annual:
-                daily = pa.daily_means(T_y, min_coverage=min_cov / 100,
-                                       interval_min=int(interval_min))
-                ann = pa.annual_metrics(daily, yr_type=yr_type, min_days=int(min_days))
-                res.update(daily=daily, ann=ann)
+                ares = ps.run_annual(data, yr_type=yr_type, min_days=int(min_days),
+                                     water_min_C=water_min, min_coverage=min_cov / 100,
+                                     interval_min=int(interval_min))
+                ann = {"record": ares.record, "yearly": ares.yearly, "fits": ares.fits}
+                res.update(daily=ares.daily, ann=ann)
 
             run_ts = pd.Timestamp.now()
             rows = []
@@ -565,7 +701,7 @@ if ran_annual:
                                        marker={"size": 4, "color": col, "opacity": 0.5}))
             fr = f[f["medium"] == med] if len(f) else f
             if len(fr):
-                fig.add_trace(go.Scatter(x=d["date"], y=pa.sinusoid_value(fr.iloc[0], d["date"], ytype),
+                fig.add_trace(go.Scatter(x=d["date"], y=an.sinusoid_value(fr.iloc[0], d["date"], ytype),
                                          mode="lines", name=med + " annual fit",
                                          line={"color": col, "width": 2}))
         fig.update_layout(height=340, yaxis_title="Daily mean temperature (°C)",
@@ -677,7 +813,7 @@ if ran_diel:
                                      marker={"size": 4, "color": col, "opacity": 0.6}))
             if len(fr):
                 r = fr.iloc[0]
-                fig.add_trace(go.Scatter(x=obs["DateTime_r"], y=pdl.sinusoid_value(r, obs["DateTime_r"]),
+                fig.add_trace(go.Scatter(x=obs["DateTime_r"], y=dl.sinusoid_value(r, obs["DateTime_r"]),
                                          mode="lines", name=medium + " fit",
                                          line={"color": col, "width": 2}))
                 txt.append("{}: amp {:.2f} °C, phase {:.2f} h, adj R² {:.2f}".format(
@@ -703,6 +839,8 @@ st.markdown("---")
 st.subheader("6 - Download")
 stem = "PASTA_" + res["run_ts"].strftime("%Y%m%d_%H%M")
 outputs = {stem + "_run_summary.csv": ("Run summary", summary),
+           stem + "_pairs.csv": ("Pairs used", res.get("pairs", pd.DataFrame())),
+           stem + "_coverage.csv": ("Data coverage", res.get("coverage", pd.DataFrame())),
            stem + "_paired_df.csv": ("Paired data", T_y)}
 if ran_annual:
     outputs.update({
@@ -716,28 +854,54 @@ if ran_diel:
         stem + "_diel_metrics.csv": ("Diel metrics", res["metrics"]),
         stem + "_diel_fits.csv": ("Diel fits", res["fits"]),
     })
-items = list(outputs.items())
-for i in range(0, len(items), 4):
-    cols = st.columns(4)
-    for col, (fn, (lab, df)) in zip(cols, items[i:i + 4]):
-        with col:
-            st.download_button("⬇️ " + lab, data=_df_to_csv(df), file_name=fn, mime="text/csv",
-                               key="dl_" + fn)
 
-o1, o2 = st.columns([3, 1])
+
+@st.cache_data(show_spinner=False)
+def _zip_outputs(sig, _outputs):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for fn, (_, df) in _outputs.items():
+            z.writestr(fn, df.to_csv(index=False))
+    return buf.getvalue()
+
+
+st.download_button(
+    "⬇️ Download all ({} files, .zip)".format(len(outputs)),
+    data=_zip_outputs(res["sig"] + stem + str(len(outputs)), outputs),
+    file_name=stem + ".zip", mime="application/zip", type="primary", key="dl_zip")
+
+with st.expander("Download single files"):
+    items = list(outputs.items())
+    for i in range(0, len(items), 4):
+        cols = st.columns(4)
+        for col, (fn, (lab, df)) in zip(cols, items[i:i + 4]):
+            with col:
+                st.download_button("⬇️ " + lab, data=_df_to_csv(df), file_name=fn,
+                                   mime="text/csv", key="dl_" + fn)
+
+st.markdown("**Or save all files to a folder on this computer**")
+default_out = str(Path(folder) / "PASTA_output") if source_mode == "📂 Local folder path" else ""
+o1, o2 = st.columns([4, 1])
 with o1:
-    default_out = str(Path(folder) / "PASTA_output") if source_mode == "📂 Local folder path" \
-        else str(Path(__file__).parent / "output")
-    out_dir = st.text_input("Or save all {} files to a folder".format(len(outputs)),
-                            value=default_out, key="out_dir")
+    out_dir = st.text_input(
+        "Output folder", value=default_out, key="out_dir", label_visibility="collapsed",
+        placeholder=r"e.g. C:\Users\you\Documents\PASTA_output",
+        help="Type or paste any folder, e.g. C:\\Users\\you\\Documents\\PASTA_output. "
+             "Quotes from Explorer's *Copy as path* are fine. The folder is created if needed.")
 with o2:
-    st.write("")
-    st.write("")
-    if st.button("💾 Save to folder"):
-        try:
-            Path(out_dir).mkdir(parents=True, exist_ok=True)
-            for fn, (_, df) in outputs.items():
-                df.to_csv(Path(out_dir) / fn, index=False)
-            st.success("Saved " + str(len(outputs)) + " files to `" + out_dir + "`")
-        except Exception as exc:
-            st.error("Could not save: " + str(exc))
+    save_clicked = st.button("💾 Save to folder", width="stretch")
+if save_clicked:
+    try:
+        target = _clean_out_dir(out_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        written = []
+        for fn, (_, df) in outputs.items():
+            df.to_csv(target / fn, index=False)
+            written.append(fn)
+        st.success("Saved {} files to `{}`".format(len(written), target))
+        st.caption("  \n".join(written))
+    except PermissionError:
+        st.error("No permission to write to `{}`. Choose a folder you can write to, "
+                 "e.g. inside C:\\Users\\<you>\\Documents.".format(out_dir))
+    except Exception as exc:
+        st.error("Could not save: " + str(exc))

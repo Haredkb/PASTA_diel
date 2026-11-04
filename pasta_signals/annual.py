@@ -1,5 +1,5 @@
 """
-pasta_annual.py -- annual-signal PASTA (Python port of the PASTA Shiny app's
+Annual signal (Python port of the PASTA Shiny app's
 R/paired_annualT_signals.R, R/stream_thermal_sensitivity.R and
 therm_analysis() in R/rundata_v1.R).
 
