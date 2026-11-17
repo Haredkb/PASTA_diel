@@ -56,6 +56,7 @@ Command line:
 ```
 python -m pasta_signals "path/to/logger_csvs" --out "path/to/output"
 python -m pasta_signals FOLDER --only annual --year-type calendar
+python -m pasta_signals FOLDER --phase-method atan       # reproduce the R phase formulas
 python -m pasta_signals FOLDER --pair HF-003 HF-003 HF_103 --pair HF_005 HF_005 HF_101
 ```
 
@@ -131,10 +132,33 @@ back through the download buttons. **Save to folder** writes to the server, not 
    **Save to folder**. The folder is created if needed. On Streamlit Cloud use the zip; the server can't write to
    your computer.
 
+## Phase: atan2 (default) or atan
+
+Both analyses fit `temp = YInt + s·sin(r) + c·cos(r)` and turn the coefficients into a phase. Choose how
+with `phase_method=` in `run_annual()` / `run_diel()`, `--phase-method` on the command line, or
+**Phase calculation** in the app's settings.
+
+- **`atan2` (default)**: `period/(2π) · (atan2(s, c) mod 2π)` is the time of the fitted peak, anywhere in
+  the cycle. `phase_d` is the day of the annual peak and `phase_h` the hour of the daily peak. Phase lags
+  are wrapped into ±half a cycle (±182.5 d, ±12 h).
+- **`atan`**: the PASTA and Diel PASTA R formulas, `365/(2π)·(3π/2 − atan(c/s))` and
+  `24/(2π)·(π − atan(c/s))`. Use it to reproduce R results. `atan` only sees the ratio `c/s`, so it covers
+  half a cycle:
+  - Annual phase is limited to 182.5–365 days: a peak earlier in the year comes out half a year late. With
+    calendar days that is any peak before about 2 July. If air and water peaks fall on either side of
+    that date, the lag is off by ~182 d.
+  - Diel phase is limited to 6–18 h: it is the peak hour − 6 h, the time the temperature rises through its
+    daily mean. A stream peaking after midnight jumps by 12 h; for example, a 10 h lag comes out as −2 h.
+
+Amplitudes, means and fits are the same either way. When all peaks fall in the safe half-cycle, the lags
+are identical too. On the Diel PASTA example data, `atan` reproduces the R metrics exactly, and `atan2`
+differs on 12 of 649 days: winter days where the air and stream peaks are 9 h or more apart.
+
 ## Differences from the R code
 
 Annual signal:
 
+- Phase uses `atan2` by default; `phase_method="atan"` keeps the R formula (see *Phase* above).
 - **Year type**: in R, `therm_analysis()` never passes `yr_type` on to `fit_TAS()`, so radian days are always
   water-year days even when *calendar* is chosen (calendar only changes the yearly grouping). The app uses
   the chosen year type for both. AmpRatio is unaffected and phase lag only changes when a phase wraps.
@@ -148,7 +172,7 @@ Diel:
   computer's local zone. For EST data read on a machine in EDT, every phase comes out 1 h late (phase
   *lag* cancels, except on the DST-change day). The app uses logger clock time as written.
 - **Minimum day coverage** (default 75 %): partial days are not fitted. Set it to 0 to fit every day, as R does.
-- The phase formula is kept exactly: `24/(2π) · (π − atan(cos/sin))`. That formula can only return 6–18 h.
+- Phase uses `atan2` by default; `phase_method="atan"` keeps the R formula exactly (see *Phase* above).
 
 Checked against `DielPASTA_Share/output`: with coverage 0, amplitude, R², RMSE and mean match
 `EG_wma_dielPASTA_fits.csv`, and phase differs by exactly the 1 h offset above. AmpRatio and
@@ -172,6 +196,7 @@ Ratio_Mean_K match `EG_dielPASTA_metrics.csv` on all 649 rows.
 | `pasta_signals/annual.py` | Daily means, annual sinusoid fits, thermal sensitivity, gap check |
 | `pasta_signals/diel.py` | Daily sinusoid fits (vectorised) and diel metrics |
 | `pasta_signals/readers.py` | Logger CSV parsing (`read_loggers`) |
+| `pasta_signals/phase.py` | Phase from the sine/cosine coefficients: `atan2` (default) or the R `atan` formulas |
 | `pasta_signals/pairing.py` | Air / stream classification and pair suggestions |
 | `pasta_signals/__main__.py` | Command line |
 | `tests/` | Synthetic-signal tests (known amplitude ratios and lags) |

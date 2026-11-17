@@ -14,6 +14,8 @@ for the whole record and for each water or calendar year (TMy_output).
 import numpy as np
 import pandas as pd
 
+from . import phase as _ph
+
 
 # ==============================================================================
 #  Daily means
@@ -71,8 +73,9 @@ def _ols(X, y):
     return b, adj, np.sqrt(sse / n)
 
 
-def fit_TAS(dates, temp, yr_type="water"):
-    """Annual sinusoid fit: temp ~ sin(rday) + cos(rday)."""
+def fit_TAS(dates, temp, yr_type="water", phase_method=_ph.DEFAULT_PHASE_METHOD):
+    """Annual sinusoid fit: temp ~ sin(rday) + cos(rday). phase_d is the day of the
+    fitted peak ('atan2') or the R formula ('atan'); see pasta_signals.phase."""
     y = np.asarray(temp, dtype=float)
     rd = rad_day(dates, yr_type)
     ok = np.isfinite(y)
@@ -81,8 +84,7 @@ def fit_TAS(dates, temp, yr_type="water"):
         return None
     X = np.column_stack([np.ones_like(rd), np.sin(rd), np.cos(rd)])
     b, adj, rmse = _ols(X, y)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        phase = (365 / (2 * np.pi)) * ((3 * np.pi / 2) - np.arctan(b[2] / b[1]))
+    phase = _ph.phase(b[1], b[2], 365, phase_method)
     return {"amplitude_C": float(np.hypot(b[1], b[2])), "phase_d": float(phase),
             "AdjRsqr": adj, "RMSE": rmse,
             "sinSlope": float(b[1]), "cosSlope": float(b[2]), "YInt": float(b[0])}
@@ -123,7 +125,7 @@ def data_gap_check(daily):
     return pd.DataFrame(rows, columns=["site_id", "max_conseq_missing_days", "count"])
 
 
-def therm_analysis(daily, yr_type="water"):
+def therm_analysis(daily, yr_type="water", phase_method=_ph.DEFAULT_PHASE_METHOD):
     """
     Whole-record annual metrics per site. Returns (metrics, sine_fits).
     metrics: site_id, AmpRatio, PhaseLag_d, Ratio_Mean, TS__Slope, TS_AdjRsqr, TS_YInt
@@ -131,17 +133,18 @@ def therm_analysis(daily, yr_type="water"):
     d = daily[daily["tavg_wat_C"] > 1]
     mets, fits = [], []
     for sid, x in d.groupby("site_id", sort=False):
-        fa = fit_TAS(x["date"], x["tavg_air_C"], yr_type)
-        fw = fit_TAS(x["date"], x["tavg_wat_C"], yr_type)
+        fa = fit_TAS(x["date"], x["tavg_air_C"], yr_type, phase_method)
+        fw = fit_TAS(x["date"], x["tavg_wat_C"], yr_type, phase_method)
         ts = fit_ThermalSens(x["tavg_air_C"], x["tavg_wat_C"])
         for f, med in ((fa, "air"), (fw, "water")):
             if f:
                 fits.append({**f, "medium": med, "site_id": sid, "n_days": int(len(x)),
-                             "yr_type": yr_type})
+                             "yr_type": yr_type, "phase_method": phase_method})
         if fa and fw:
             m = {"site_id": sid,
                  "AmpRatio": round(fw["amplitude_C"] / fa["amplitude_C"], 2),
-                 "PhaseLag_d": round(fw["phase_d"] - fa["phase_d"], 2),
+                 "PhaseLag_d": round(float(_ph.lag(fw["phase_d"], fa["phase_d"], 365,
+                                                  phase_method)), 2),
                  "Ratio_Mean": round(fw["YInt"] / fa["YInt"], 2)}
         else:
             m = {"site_id": sid, "AmpRatio": np.nan, "PhaseLag_d": np.nan, "Ratio_Mean": np.nan}
@@ -152,7 +155,8 @@ def therm_analysis(daily, yr_type="water"):
     return pd.DataFrame(mets, columns=cols), pd.DataFrame(fits)
 
 
-def annual_metrics(daily, yr_type="water", min_days=100):
+def annual_metrics(daily, yr_type="water", min_days=100,
+                   phase_method=_ph.DEFAULT_PHASE_METHOD):
     """
     Returns dict of DataFrames:
       'record' : whole-record metrics + gap check per site (PASTA metric_table)
@@ -163,7 +167,7 @@ def annual_metrics(daily, yr_type="water", min_days=100):
         e = pd.DataFrame()
         return {"record": e, "yearly": e, "fits": e}
 
-    rec, rec_fits = therm_analysis(daily, yr_type)
+    rec, rec_fits = therm_analysis(daily, yr_type, phase_method)
     rec = rec.merge(data_gap_check(daily), on="site_id", how="left")
     rec_fits["year"] = "all"
 
@@ -171,7 +175,7 @@ def annual_metrics(daily, yr_type="water", min_days=100):
     d["year"] = water_year(d["date"]) if yr_type == "water" else pd.to_datetime(d["date"]).dt.year
     yr_rows, yr_fits = [], []
     for yr, x in d.groupby("year", sort=True):
-        m, f = therm_analysis(x, yr_type)
+        m, f = therm_analysis(x, yr_type, phase_method)
         m = m.merge(data_gap_check(x), on="site_id", how="left")
         m["year"] = int(yr)
         f["year"] = str(int(yr))

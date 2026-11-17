@@ -26,6 +26,7 @@ Example
 from .core import (ANALYSES, AnnualResult, DielResult, PastaResult, pair_data,
                    run_annual, run_diel, run_folder, run_pasta)
 from .pairing import classify_loggers, pair_loggers
+from .phase import DEFAULT_PHASE_METHOD, PHASE_METHODS
 from .readers import parse_logger_csv, read_logger, read_loggers
 
 __version__ = "0.1.0"
@@ -35,4 +36,5 @@ __all__ = [
     "read_loggers", "read_logger", "parse_logger_csv",
     "classify_loggers", "pair_loggers", "pair_data",
     "AnnualResult", "DielResult", "PastaResult", "ANALYSES",
+    "PHASE_METHODS", "DEFAULT_PHASE_METHOD",
 ]

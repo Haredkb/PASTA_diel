@@ -7,6 +7,8 @@ Diel_PASTA_Example.Rmd).
 import numpy as np
 import pandas as pd
 
+from . import phase as _ph
+
 
 # ==============================================================================
 #  4. Daily sinusoid fits -- vectorised fit_TDAS_hour over every day
@@ -30,12 +32,15 @@ def build_paired_df(pairs, grids, water_min_C=0.99):
     return pd.concat(frames, ignore_index=True)
 
 
-def fit_daily_sinusoids(T_y, min_coverage=0.75, interval_min=15):
+def fit_daily_sinusoids(T_y, min_coverage=0.75, interval_min=15,
+                        phase_method=_ph.DEFAULT_PHASE_METHOD):
     """
     Per site/day/medium OLS fit  temp ~ sin(rday) + cos(rday), rday = 2*pi*h/24
     with h = hour + minute/60 (as rad_hour() in R). Returns the same columns as
     TMd_output(): amplitude_C, phase_h, AdjRsqr, RMSE, sinSlope, cosSlope,
     YInt, medium, site_id, date, year, plus n_obs.
+    phase_method: 'atan2' (phase_h = hour of the fitted daily peak) or 'atan'
+    (the R formula; see pasta_signals.phase).
     """
     if T_y.empty:
         return pd.DataFrame()
@@ -80,8 +85,8 @@ def fit_daily_sinusoids(T_y, min_coverage=0.75, interval_min=15):
             r2 = 1 - sse / sst
             adj = 1 - (1 - r2) * (n - 1) / (n - 3)
             rmse = np.sqrt(sse / n)
-            phase = (24 / (2 * np.pi)) * (np.pi - np.arctan(b[:, 2] / b[:, 1]))
         amp = np.sqrt(b[:, 1] ** 2 + b[:, 2] ** 2)
+        phase = _ph.phase(b[:, 1], b[:, 2], 24, phase_method)
 
         res = S.index.to_frame(index=False)
         res = res.assign(
@@ -109,10 +114,11 @@ def sinusoid_value(fit_row, timestamps):
 #  5. Paired metrics
 # ==============================================================================
 
-def pasta_metrics(fits, r2_min=0.7, roll_k=7):
+def pasta_metrics(fits, r2_min=0.7, roll_k=7, phase_method=_ph.DEFAULT_PHASE_METHOD):
     """
     Metrics chunk of Diel_PASTA_Example.Rmd: keep days where both air and
-    water AdjRsqr > r2_min, then water/air ratios and lags.
+    water AdjRsqr > r2_min, then water/air ratios and lags. With phase_method
+    'atan2' the lag is wrapped into (-12, 12] h.
     """
     if fits.empty:
         return pd.DataFrame()
@@ -126,7 +132,8 @@ def pasta_metrics(fits, r2_min=0.7, roll_k=7):
         "site_id": w["site_id"],
         "date": w["date"],
         "AmpRatio": (w["amplitude_C_water"] / w["amplitude_C_air"]).round(2),
-        "PhaseLag_h": (w["phase_h_water"] - w["phase_h_air"]).round(2),
+        "PhaseLag_h": pd.Series(_ph.lag(w["phase_h_water"], w["phase_h_air"], 24,
+                                       phase_method), index=w.index).round(2),
         "Ratio_Mean_C": (w["YInt_water"] / w["YInt_air"]).round(5),
         "Ratio_Mean_K": ((w["YInt_water"] + 273.15) / (w["YInt_air"] + 273.15)).round(5),
         "Amp_air_C": w["amplitude_C_air"].round(3),

@@ -21,6 +21,7 @@ import pandas as pd
 
 from . import annual as _annual
 from . import diel as _diel
+from .phase import DEFAULT_PHASE_METHOD, check_method
 from .pairing import classify_loggers, pair_loggers
 from .readers import read_loggers
 
@@ -159,7 +160,7 @@ def pair_data(loggers, pairs):
 # ==============================================================================
 
 def run_diel(data, interval_min=None, water_min_C=0.99, min_coverage=0.75,
-             r2_min=0.7, roll_k=7):
+             r2_min=0.7, roll_k=7, phase_method=DEFAULT_PHASE_METHOD):
     """
     Diel PASTA: fit temp ~ sin(2πh/24) + cos(2πh/24) to air and stream for every
     site and day, then compute water/air metrics for days where both fits pass r2_min.
@@ -171,6 +172,9 @@ def run_diel(data, interval_min=None, water_min_C=0.99, min_coverage=0.75,
     min_coverage:  share of a full day of records needed to fit a day (0 = every day, as in R).
     r2_min:        both fits must exceed this adjusted R² for the day to be kept.
     roll_k:        centred rolling-mean window (days) for AR_roll7 / PH_roll7.
+    phase_method:  'atan2' (default): phase_h = hour of the fitted daily peak, lag
+                   wrapped into (-12, 12] h. 'atan': the Diel PASTA R formula, to
+                   reproduce R results (phase confined to 6-18 h; see pasta_signals.phase).
 
     Returns DielResult(paired, fits, metrics, summary, settings).
     """
@@ -179,8 +183,11 @@ def run_diel(data, interval_min=None, water_min_C=0.99, min_coverage=0.75,
         raise ValueError("run_diel() needs sub-daily records; these look like daily means.")
     interval_min = interval_min or _infer_interval(d)
     paired = _to_paired(d, interval_min, water_min_C)
-    fits = _diel.fit_daily_sinusoids(paired, min_coverage=min_coverage, interval_min=interval_min)
-    metrics = _diel.pasta_metrics(fits, r2_min=r2_min, roll_k=int(roll_k))
+    check_method(phase_method)
+    fits = _diel.fit_daily_sinusoids(paired, min_coverage=min_coverage, interval_min=interval_min,
+                                     phase_method=phase_method)
+    metrics = _diel.pasta_metrics(fits, r2_min=r2_min, roll_k=int(roll_k),
+                                  phase_method=phase_method)
 
     rows = []
     for sid in paired["site_id"].unique():
@@ -193,12 +200,13 @@ def run_diel(data, interval_min=None, water_min_C=0.99, min_coverage=0.75,
                      "diel_median_PhaseLag_h": m["PhaseLag_h"].median() if len(m) else np.nan,
                      "diel_median_Ratio_Mean_K": m["Ratio_Mean_K"].median() if len(m) else np.nan})
     settings = {"interval_min": interval_min, "water_min_C": water_min_C,
-                "min_coverage": min_coverage, "r2_min": r2_min, "roll_k": roll_k}
+                "min_coverage": min_coverage, "r2_min": r2_min, "roll_k": roll_k,
+                "phase_method": phase_method}
     return DielResult(paired, fits, metrics, pd.DataFrame(rows), settings)
 
 
 def run_annual(data, yr_type="water", min_days=100, water_min_C=0.99,
-               min_coverage=0.75, interval_min=None):
+               min_coverage=0.75, interval_min=None, phase_method=DEFAULT_PHASE_METHOD):
     """
     Annual-signal PASTA: fit temp ~ sin(2πd/365) + cos(2πd/365) to daily mean air
     and stream temperature for each site, for the whole record and for each year,
@@ -213,6 +221,9 @@ def run_annual(data, yr_type="water", min_days=100, water_min_C=0.99,
                    Days with a stream mean ≤ 1 °C are always dropped (as in PASTA).
     min_coverage:  share of a full day of paired records needed for a daily mean.
     interval_min:  logging interval for sub-daily data; inferred when None.
+    phase_method:  'atan2' (default): phase_d = day of the fitted peak, lag wrapped
+                   into (-182.5, 182.5] d. 'atan': the PASTA R formula, to reproduce
+                   R results (phase confined to 182.5-365 d; see pasta_signals.phase).
 
     Returns AnnualResult(daily, record, yearly, fits, settings).
     """
@@ -227,13 +238,16 @@ def run_annual(data, yr_type="water", min_days=100, water_min_C=0.99,
         interval_min = interval_min or _infer_interval(d)
         paired = _to_paired(d, interval_min, water_min_C)
         daily = _annual.daily_means(paired, min_coverage=min_coverage, interval_min=interval_min)
-    res = _annual.annual_metrics(daily, yr_type=yr_type, min_days=int(min_days))
+    check_method(phase_method)
+    res = _annual.annual_metrics(daily, yr_type=yr_type, min_days=int(min_days),
+                                 phase_method=phase_method)
     span = daily.groupby("site_id")["date"].agg(lambda x: (x.max() - x.min()).days + 1)
     rec = res["record"]
     if len(rec):
         rec = rec.merge(span.rename("record_span_days").reset_index(), on="site_id", how="left")
     settings = {"yr_type": yr_type, "min_days": min_days, "water_min_C": water_min_C,
-                "min_coverage": min_coverage, "interval_min": interval_min}
+                "min_coverage": min_coverage, "interval_min": interval_min,
+                "phase_method": phase_method}
     return AnnualResult(daily, rec, res["yearly"], res["fits"], settings)
 
 

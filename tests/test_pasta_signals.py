@@ -131,3 +131,53 @@ def test_names_beat_data():
     out = suggest_pairs(["Brook"], ["AT_001", "AT_002"], {("Brook", "AT_002"): 0.8,
                                                           ("Brook", "AT_001"): 0.4})
     assert out["Brook"] == ("AT_002", "data: best diel correlation")
+
+
+# ---- phase method -------------------------------------------------------------
+
+def _phase_case(peak_air_h, peak_wat_h, ann_peak_air, ann_peak_wat):
+    t = pd.date_range("2023-10-01", "2025-09-30 23:45", freq="15min")
+    doy = t.dayofyear.to_numpy()
+    h = t.hour.to_numpy() + t.minute.to_numpy() / 60
+    air = 10 + 12 * np.cos(2 * np.pi * (doy - ann_peak_air) / 365) \
+        + 5 * np.cos(2 * np.pi * (h - peak_air_h) / 24)
+    wat = 12 + 6 * np.cos(2 * np.pi * (doy - ann_peak_wat) / 365) \
+        + 1 * np.cos(2 * np.pi * (h - peak_wat_h) / 24)
+    return pd.DataFrame({"s": "X", "t": t, "w": wat, "a": air})
+
+
+def test_phase_helpers():
+    from pasta_signals.phase import lag, phase
+    w = 2 * np.pi * 150 / 365                                     # peak on day 150
+    assert phase(np.sin(w), np.cos(w), 365, "atan2") == pytest.approx(150)
+    assert phase(np.sin(w), np.cos(w), 365, "atan") == pytest.approx(332.5)   # R: half a year late
+    w = 2 * np.pi * 15 / 24                                       # peak at 15:00
+    assert phase(np.sin(w), np.cos(w), 24, "atan2") == pytest.approx(15)
+    assert phase(np.sin(w), np.cos(w), 24, "atan") == pytest.approx(9)        # R: peak - 6 h
+    assert lag(1, 23, 24, "atan2") == pytest.approx(2)            # wrapped across midnight
+    assert lag(1, 23, 24, "atan") == pytest.approx(-22)
+    with pytest.raises(ValueError):
+        phase(1, 1, 24, "bad")
+
+
+def test_default_is_atan2():
+    import inspect
+    for fn in (ps.run_annual, ps.run_diel):
+        assert inspect.signature(fn).parameters["phase_method"].default == "atan2"
+
+
+def test_atan2_fixes_late_diel_peak():
+    df = _phase_case(15, 1, 200, 210)                  # stream peaks 01:00, 10 h after air
+    lag2 = ps.run_diel(df, water_min_C=-99).metrics["PhaseLag_h"].median()
+    lag1 = ps.run_diel(df, water_min_C=-99, phase_method="atan").metrics["PhaseLag_h"].median()
+    assert lag2 == pytest.approx(10, abs=0.1)
+    assert lag1 == pytest.approx(-2, abs=0.1)          # the R formula's 12 h jump
+
+
+def test_atan2_fixes_annual_peaks_straddling_july():
+    df = _phase_case(15, 17, 175, 190)                 # calendar peaks either side of 2 July
+    a2 = ps.run_annual(df, yr_type="calendar", water_min_C=-99).record.iloc[0]
+    a1 = ps.run_annual(df, yr_type="calendar", water_min_C=-99, phase_method="atan").record.iloc[0]
+    assert a2["PhaseLag_d"] == pytest.approx(15, abs=1)
+    assert abs(a1["PhaseLag_d"] - 15) > 100            # the R formula's half-year jump
+    assert a1["AmpRatio"] == a2["AmpRatio"]            # amplitude is unaffected

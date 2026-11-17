@@ -17,6 +17,8 @@ def main(argv=None):
     ap.add_argument("--out", help="output folder (default: FOLDER/PASTA_output)")
     ap.add_argument("--only", choices=ANALYSES, help="run only one analysis (default: both)")
     ap.add_argument("--year-type", choices=["water", "calendar"], default="water")
+    ap.add_argument("--phase-method", choices=["atan2", "atan"], default="atan2",
+                    help="atan2 (default): phase = fitted peak time; atan: the PASTA R formula")
     ap.add_argument("--interval", type=int, default=15, help="logging interval, minutes")
     ap.add_argument("--pair", nargs=3, action="append", metavar=("SITE", "STREAM", "AIR"),
                     help="set a pair yourself (repeat for each site); overrides suggestions")
@@ -24,7 +26,8 @@ def main(argv=None):
 
     out = a.out or str(__import__("pathlib").Path(a.folder) / "PASTA_output")
     res = run_folder(a.folder, analyses=(a.only,) if a.only else ANALYSES, pairs=a.pair,
-                     interval_min=a.interval, out_dir=out, yr_type=a.year_type)
+                     interval_min=a.interval, out_dir=out, yr_type=a.year_type,
+                     phase_method=a.phase_method)
     print("Pairs:")
     print(res.pairs[["site_id", "stream", "air", "basis"]].to_string(index=False))
     print("\nSummary:")

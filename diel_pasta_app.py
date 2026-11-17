@@ -556,6 +556,15 @@ with st.expander("Settings", expanded=True):
             "Drop stream records ≤ (°C)", value=0.99, step=0.01, format="%.2f",
             help="R: filter(str_temp > 0.99). Removes ice-affected / out-of-water records. "
                  "The annual analysis also drops days with a stream mean ≤ 1 °C, as PASTA does.")
+        phase_method = st.radio(
+            "Phase calculation", ["atan2", "atan"], horizontal=True, key="phase_method",
+            format_func=lambda m: {"atan2": "atan2: fitted peak time (default)",
+                                   "atan": "atan: match the R scripts"}[m],
+            help="**atan2** returns the time of the fitted peak anywhere in the cycle and "
+                 "wraps phase lags into ±half a cycle. **atan** reproduces the PASTA and "
+                 "Diel PASTA R formulas, which only see half a cycle: annual phase 182.5–365 d "
+                 "(a peak earlier in the year comes out half a year late) and diel phase 6–18 h "
+                 "(the peak hour − 6 h; a stream peaking after midnight jumps by 12 h).")
         min_cov = st.slider(
             "Minimum day coverage (%)", 0, 100, 75, 5,
             help="Days with fewer paired records than this share of a full day are not "
@@ -578,9 +587,11 @@ with st.expander("Settings", expanded=True):
                                  disabled=not do_diel,
                                  help="Centred rolling mean over kept days (R: zoo::rollmean k = 7).")
         st.caption("Diel phase uses the logger clock time as written. The R `rad_hour()` "
-                   "converts to the computer's time zone, which shifts phase by 1 h across DST.")
+                   "converts to the computer's time zone, which shifts phase by 1 h across DST. "
+                   "With atan2, phase_h is the hour of the fitted daily peak.")
 
 run_sig = _sig(score_sig, tuple(pair_list), tuple(analyses), water_min, min_cov, yr_type,
+               phase_method,
                min_days, r2_min, roll_k, str(dr0), str(dr1))
 
 
@@ -601,13 +612,14 @@ if st.button("Run PASTA", type="primary"):
 
             if do_diel:
                 dres = ps.run_diel(data, interval_min=int(interval_min), water_min_C=water_min,
-                                   min_coverage=min_cov / 100, r2_min=r2_min, roll_k=int(roll_k))
+                                   min_coverage=min_cov / 100, r2_min=r2_min, roll_k=int(roll_k),
+                                   phase_method=phase_method)
                 fits, metrics = dres.fits, dres.metrics
                 res.update(fits=fits, metrics=metrics)
             if do_annual:
                 ares = ps.run_annual(data, yr_type=yr_type, min_days=int(min_days),
                                      water_min_C=water_min, min_coverage=min_cov / 100,
-                                     interval_min=int(interval_min))
+                                     interval_min=int(interval_min), phase_method=phase_method)
                 ann = {"record": ares.record, "yearly": ares.yearly, "fits": ares.fits}
                 res.update(daily=ares.daily, ann=ann)
 
@@ -618,7 +630,7 @@ if st.button("Run PASTA", type="primary"):
                        "site_id": sid, "stream_logger": s, "air_logger": a,
                        "analyses": " + ".join(analyses),
                        "interval_min": int(interval_min), "water_min_C": water_min,
-                       "min_day_coverage_pct": min_cov,
+                       "min_day_coverage_pct": min_cov, "phase_method": phase_method,
                        "date_from": dr0.date().isoformat(),
                        "date_to": (dr1 - pd.Timedelta(days=1)).date().isoformat(),
                        "n_paired_records": int((T_y["site_id"] == sid).sum())}
