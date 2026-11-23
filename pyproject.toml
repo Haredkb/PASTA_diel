@@ -1,22 +1,37 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pasta_signals"
-version = "0.1.0"
+name = "pastatemp"
+version = "0.2.0"
 description = "Paired Air and Stream Temperature Analysis (PASTA) at the annual and diel scales"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Danielle Hare" }]
 requires-python = ">=3.9"
 dependencies = ["numpy>=1.23", "pandas>=1.5"]
+keywords = ["stream temperature", "air temperature", "groundwater", "hydrology",
+            "thermal sensitivity", "sinusoid", "PASTA"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Hydrology",
+]
+
+[project.urls]
+Repository = "https://github.com/Haredkb/PASTA_diel"
+Issues = "https://github.com/Haredkb/PASTA_diel/issues"
 
 [project.optional-dependencies]
+plots = ["plotly>=5.0"]
 app = ["streamlit>=1.50", "plotly>=5.0", "pyarrow>=14.0"]
 test = ["pytest"]
 
 [project.scripts]
-pasta-signals = "pasta_signals.__main__:main"
+pastatemp = "pastatemp.__main__:main"
 
 [tool.setuptools]
-packages = ["pasta_signals"]
+packages = ["pastatemp", "pasta_signals"]

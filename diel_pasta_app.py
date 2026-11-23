@@ -13,7 +13,8 @@ suggests air-stream pairs, then runs either or both analyses:
 Usage:
     streamlit run diel_pasta_app.py        (or double-click run_diel_pasta.bat)
 
-Analysis code lives in the pasta_signals package (run_annual, run_diel); see README.
+Every step is a function in the pastatemp package (run_loggers, run_annual,
+run_diel, coverage, plots, export); this file is only the user interface. See README.
 """
 
 # -- Auto-install missing packages from requirements.txt --------
@@ -54,31 +55,40 @@ if _check_and_install():
     os.execv(sys.executable, [sys.executable] + sys.argv)
 # -- End auto-install ----------------------------------------------------------
 
-import io
 import hashlib
-import zipfile
-import datetime as _dt
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import plotly.io as pio
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import pasta_signals as ps
-from pasta_signals import annual as an, diel as dl, pairing as pr, readers as rd
+import pastatemp as ps
+
+
+def _reload_package_if_changed():
+    """Streamlit (and Streamlit Cloud after a git push) reruns this script with new
+    code but keeps imported modules in memory, so an old pastatemp could be used
+    with a new app ("unexpected keyword argument"). Reload the package whenever its
+    files have changed since it was imported."""
+    pkg_dir = Path(ps.__file__).parent
+    stamp = max(p.stat().st_mtime for p in pkg_dir.glob("*.py"))
+    if getattr(ps, "_app_loaded_stamp", None) == stamp:
+        return ps
+    order = ["phase", "readers", "pairing", "annual", "diel", "coverage", "export", "core", "plots"]
+    for name in order:
+        mod = sys.modules.get("pastatemp." + name)
+        if mod is not None:
+            importlib.reload(mod)
+    pkg = importlib.reload(sys.modules["pastatemp"])
+    pkg._app_loaded_stamp = stamp
+    return pkg
+
+
+ps = _reload_package_if_changed()
+from pastatemp import pairing as pr, plots as pp, readers as rd  # noqa: E402
 
 pio.templates.default = "plotly_white"
-
-# Maximum points in any single Plotly trace (browser stays responsive).
-_MAX_PLOT_POINTS = 2_000
-
-AIR_COLOR = "#d62728"
-WATER_COLOR = "#1f77b4"
-SITE_COLORS = ["#3F4570", "#BD9C8F", "#7C83BC", "#8ABD6A", "#557044",
-               "#C06C84", "#355C7D", "#F8B195", "#6C5B7B", "#99B898"]
 
 # Pre-fill the folder box by setting DIEL_PASTA_DATA to your data folder.
 _DEFAULT_FOLDER = os.environ.get("DIEL_PASTA_DATA", "")
@@ -88,12 +98,11 @@ _DEFAULT_FOLDER = os.environ.get("DIEL_PASTA_DATA", "")
 # recomputed. Falls back to a no-op decorator on older Streamlit.
 _fragment = getattr(st, "fragment", None) or (lambda f: f)
 
-
-def _downsample(obj, n=_MAX_PLOT_POINTS):
-    """Return every k-th row so that len(result) <= n."""
-    if len(obj) <= n:
-        return obj
-    return obj.iloc[:: max(1, len(obj) // n)]
+ANALYSIS_LABELS = {"Annual signal": "annual", "Diel": "diel"}
+FILE_LABELS = {"run_summary": "Run summary", "pairs": "Pairs used", "coverage": "Data coverage",
+               "paired_df": "Paired data", "annual_metrics": "Annual metrics (record)",
+               "annual_metrics_yearly": "Annual metrics (by year)", "annual_fits": "Annual fits",
+               "daily_means": "Daily means", "diel_metrics": "Diel metrics", "diel_fits": "Diel fits"}
 
 
 st.set_page_config(
@@ -135,94 +144,9 @@ def _pair_scores(sig, _grids, streams, airs, interval_min):
 
 
 @st.cache_data(show_spinner=False)
-def _overview_frame(sig, _grids, names):
-    """Downsampled long table of every logger for the overview plot."""
-    parts = []
-    for n in names:
-        s = _downsample(_grids[n])
-        parts.append(pd.DataFrame({"timestamp": s.index, "temp_C": s.to_numpy(), "logger": n}))
-    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
-
-
-@st.cache_data(show_spinner=False)
 def _coverage(sig, _grids, pairs, interval_min):
-    """Start / end of each logger and of the paired (both present) record, per site."""
-    per_day = 24 * 60 / interval_min
-    rows = []
-    for sid, s, a in pairs:
-        gs, ga = _grids[s].dropna(), _grids[a].dropna()
-        both = gs.index.intersection(ga.index)
-        rows.append({"site_id": sid, "stream": s, "air": a,
-                     "stream_start": gs.index.min(), "stream_end": gs.index.max(),
-                     "air_start": ga.index.min(), "air_end": ga.index.max(),
-                     "paired_start": both.min() if len(both) else pd.NaT,
-                     "paired_end": both.max() if len(both) else pd.NaT,
-                     "paired_days": len(both) / per_day,
-                     "paired_index": both})
-    return pd.DataFrame(rows)
-
-
-def _coverage_in_range(cov, dr0, dr1):
-    """Per site: paired days inside [dr0, dr1) and whether the site spans the range."""
-    out = cov.drop(columns=["paired_index"]).copy()
-    n_days = max((dr1 - dr0).days, 1)
-    tol = pd.Timedelta(days=1)
-    in_range, status = [], []
-    for r in cov.itertuples():
-        idx = r.paired_index
-        k = idx[(idx >= dr0) & (idx < dr1)]
-        days = len(pd.unique(k.normalize())) if len(k) else 0
-        in_range.append(days)
-        if days == 0:
-            status.append("no data in range")
-        elif r.paired_start > dr0 + tol and r.paired_end < dr1 - 2 * tol:
-            status.append("starts late and ends early")
-        elif r.paired_start > dr0 + tol:
-            status.append("starts {}".format(r.paired_start.date()))
-        elif r.paired_end < dr1 - 2 * tol:
-            status.append("ends {}".format(r.paired_end.date()))
-        elif days < 0.9 * n_days:
-            status.append("gaps inside range")
-        else:
-            status.append("covers whole range")
-    out["days_in_range"] = in_range
-    out["pct_of_range"] = [100 * d / n_days for d in in_range]
-    out["status"] = status
-    return out
-
-
-def _coverage_plot(cov, dr0, dr1):
-    fig = go.Figure()
-    fig.add_vrect(x0=dr0, x1=dr1, fillcolor="rgba(31,119,180,0.08)", line_width=0,
-                  annotation_text="selected range", annotation_position="top left")
-    for r in cov.itertuples():
-        for y_off, start, end, col, nm in ((0.18, r.air_start, r.air_end, AIR_COLOR, "air"),
-                                           (0.0, r.paired_start, r.paired_end, "#333333", "paired"),
-                                           (-0.18, r.stream_start, r.stream_end, WATER_COLOR, "stream")):
-            if pd.isna(start):
-                continue
-            fig.add_trace(go.Scatter(x=[start, end], y=[r.site_id, r.site_id], mode="lines",
-                                     line={"color": col, "width": 9 if nm == "paired" else 4},
-                                     name=nm, legendgroup=nm, showlegend=(r.Index == 0),
-                                     hovertemplate=nm + ": %{x|%Y-%m-%d}<extra>" + r.site_id + "</extra>"))
-    fig.update_layout(height=max(160, 46 * len(cov) + 80),
-                      margin={"l": 20, "r": 20, "t": 30, "b": 20},
-                      legend={"orientation": "h", "y": 1.12})
-    st.plotly_chart(fig, width="stretch")
-
-
-def _clean_out_dir(raw):
-    """User-typed folder -> absolute Path. Accepts quotes (Copy as path), ~, %VARS%."""
-    txt = os.path.expandvars(str(raw).strip().strip('"').strip("'").strip())
-    if not txt:
-        raise ValueError("Type a folder path, e.g. C:\\Users\\you\\Documents\\PASTA_output")
-    if os.name != "nt" and len(txt) > 1 and txt[1] == ":":
-        raise ValueError("This app is running on a server, not on your computer, so it cannot "
-                         "save to " + txt + ". Use **Download all (.zip)** instead.")
-    path = Path(txt).expanduser()
-    if os.name == "nt" and path.drive and not Path(path.drive + "\\").exists():
-        raise ValueError("Drive " + path.drive + " was not found.")
-    return path.resolve()
+    """ps.coverage(), cached; `_grids` is not hashed (leading underscore)."""
+    return ps.coverage(_grids, list(pairs), interval_min)
 
 
 @st.cache_data(show_spinner=False)
@@ -364,23 +288,7 @@ airs = [n for n, t in types.items() if t == "air"]
 streams = [n for n, t in types.items() if t == "stream"]
 
 with st.expander("Overview plot: all loggers", expanded=True):
-    ov_names = tuple(airs + streams)
-    ov = _overview_frame(_sig(tuple(sorted((f, len(b)) for f, b in files)), interval_min),
-                         grids, ov_names)
-    fig_ov = go.Figure()
-    for n in ov_names:
-        d = ov[ov["logger"] == n]
-        is_air = types[n] == "air"
-        fig_ov.add_trace(go.Scattergl(
-            x=d["timestamp"], y=d["temp_C"], mode="lines",
-            name=n + (" (air)" if is_air else " (stream)"),
-            line={"width": 1.0 if is_air else 1.6},
-            opacity=0.55 if is_air else 1.0,
-            legendgroup="air" if is_air else "stream",
-        ))
-    fig_ov.update_layout(height=320, yaxis_title="Temperature (°C)",
-                         margin={"l": 20, "r": 20, "t": 20, "b": 20})
-    st.plotly_chart(fig_ov, width="stretch")
+    st.plotly_chart(pp.plot_loggers({n: grids[n] for n in airs + streams}, types), width="stretch")
 
 if not airs or not streams:
     st.info("Need at least one **air** and one **stream** logger to pair.")
@@ -456,14 +364,7 @@ def _pair_check_plot():
     opts = sel_pairs["site_id"].tolist()
     pick = st.selectbox("Check a pair", opts, key="pair_check")
     row = sel_pairs[sel_pairs["site_id"] == pick].iloc[0]
-    fig = go.Figure()
-    for n, col, nm in ((row["air"], AIR_COLOR, "air: "), (row["stream"], WATER_COLOR, "stream: ")):
-        s = _downsample(grids[n])
-        fig.add_trace(go.Scattergl(x=s.index, y=s.to_numpy(), mode="lines", name=nm + n,
-                                   line={"width": 1.2, "color": col}))
-    fig.update_layout(height=300, yaxis_title="Temperature (°C)",
-                      margin={"l": 20, "r": 20, "t": 20, "b": 20})
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(pp.plot_pair(grids, row["stream"], row["air"]), width="stretch")
 
 
 with st.expander("Pair check plot", expanded=False):
@@ -484,6 +385,7 @@ do_diel = "Diel" in analyses
 if not analyses:
     st.info("Select at least one analysis.")
     st.stop()
+pkg_analyses = tuple(ANALYSIS_LABELS[a] for a in analyses)
 
 pair_list = [(r.site_id, r.stream, r.air) for r in sel_pairs.itertuples()]
 cov = _coverage(_sig(score_sig, tuple(pair_list)), grids, tuple(pair_list), int(interval_min))
@@ -495,15 +397,15 @@ range_mode = st.radio(
     help="**All data**: every site uses its full paired record. **Common period**: only "
          "dates where every selected site has paired air and stream data. **Custom**: pick dates.")
 c_first, c_last = cov["paired_start"].min(), cov["paired_end"].max()
-common0, common1 = cov["paired_start"].max(), cov["paired_end"].min()
+common0, common1 = ps.common_period(cov)
 if range_mode == "All data":
-    dr0, dr1 = c_first.normalize(), c_last.normalize() + pd.Timedelta(days=1)
+    dr0, dr1 = ps.date_range(cov, "all")
 elif range_mode == "Common period (all sites)":
-    if common0 >= common1:
+    if common0 is None:
         st.error("No period is shared by all selected sites. Choose **All data**, "
                  "**Custom**, or untick sites in the pair table.")
         st.stop()
-    dr0, dr1 = common0.normalize(), common1.normalize() + pd.Timedelta(days=1)
+    dr0, dr1 = ps.date_range(cov, "common")
 else:
     d0, d1 = c_first.date(), c_last.date()
     date_range = st.date_input("Custom dates", value=(d0, d1), min_value=d0, max_value=d1,
@@ -513,7 +415,7 @@ else:
     else:
         dr0, dr1 = pd.Timestamp(d0), pd.Timestamp(d1) + pd.Timedelta(days=1)
 
-cov_view = _coverage_in_range(cov, dr0, dr1)
+cov_view = ps.coverage_in_range(cov, dr0, dr1)
 n_full = int((cov_view["status"] == "covers whole range").sum())
 range_txt = "{} to {} ({} days)".format(dr0.date(), (dr1 - pd.Timedelta(days=1)).date(),
                                         (dr1 - dr0).days)
@@ -530,7 +432,7 @@ else:
             range_txt, len(short), len(cov_view),
             ", ".join("{} ({})".format(r.site_id, r.status) for r in short.itertuples())))
 with st.expander("Data coverage by site", expanded=n_full < len(cov_view)):
-    _coverage_plot(cov, dr0, dr1)
+    st.plotly_chart(pp.plot_coverage(cov, dr0, dr1), width="stretch")
     st.dataframe(cov_view, hide_index=True, width="stretch",
                  column_config={
                      "stream_start": st.column_config.DatetimeColumn("Stream start", format="YYYY-MM-DD"),
@@ -545,7 +447,7 @@ with st.expander("Data coverage by site", expanded=n_full < len(cov_view)):
                  })
     st.caption("Paired = times with both the stream and the air record. Common period "
                "for all sites: {}.".format(
-                   "{} to {}".format(common0.date(), common1.date()) if common0 < common1
+                   "{} to {}".format(common0.date(), common1.date()) if common0 is not None
                    else "none"))
 
 with st.expander("Settings", expanded=True):
@@ -574,12 +476,19 @@ with st.expander("Settings", expanded=True):
         yr_type = st.radio("Year type", ["water", "calendar"], horizontal=True,
                            disabled=not do_annual,
                            help="Water year runs 1 Oct – 30 Sep and is named by the year it ends.")
-        min_consec = st.slider(
-            "Single year: minimum consecutive days", 1, 365, 100, 1,
+        max_gap = st.slider(
+            "Single year: maximum consecutive days with no data", 0, 365, 50, 1,
             disabled=not do_annual,
-            help="A year is fitted only if it has a run of at least this many consecutive "
-                 "daily means with stream > 1 °C (counted after the 1 °C drop). Other years "
-                 "get no AmpRatio, phase lag or mean ratio.")
+            help="A year with more consecutive no-data days than this is dropped (no "
+                 "AmpRatio, phase lag or mean ratio). Default 50. Counted after the 1 °C drop: "
+                 "a no-data day has no daily mean with stream > 1 °C (no records, too little of "
+                 "the day logged, or stream ≤ 1 °C). Days before the record starts or after it "
+                 "ends in that year count as no data.")
+        max_missing_pct = st.slider(
+            "Single year: maximum total days with no data (% of year)", 0, 100, 75, 5,
+            disabled=not do_annual,
+            help="A year whose no-data days (after the 1 °C drop) add up to more than this "
+                 "share of the year (365/366 days) is also dropped. Default 75%.")
         min_rec_pct = st.slider(
             "Whole record: minimum % of record", 0, 100, 75, 5,
             disabled=not do_annual,
@@ -600,71 +509,30 @@ with st.expander("Settings", expanded=True):
 
 run_sig = _sig(score_sig, tuple(pair_list), tuple(analyses), water_min, min_cov, yr_type,
                phase_method,
-               min_consec, min_rec_pct, r2_min, roll_k, str(dr0), str(dr1))
-
-
-def _site_med(df, sid, col):
-    return df.loc[df["site_id"] == sid, col].median() if len(df) else np.nan
+               max_gap, max_missing_pct, min_rec_pct, r2_min, roll_k, str(dr0), str(dr1))
 
 
 if st.button("Run PASTA", type="primary"):
     with st.spinner("Fitting sinusoids..."):
         try:
-            clipped = {n: g[(g.index >= dr0) & (g.index < dr1)] for n, g in grids.items()}
-            data = ps.pair_data(clipped, pair_list)
-            T_y = data[data["str_temp"] > water_min].reset_index(drop=True)
-            res = {"T_y": T_y, "analyses": list(analyses), "yr_type": yr_type,
-                   "min_consec": int(min_consec), "min_rec_pct": int(min_rec_pct),
-                   "pairs": sel_pairs.drop(columns=["include"]).reset_index(drop=True),
-                   "coverage": cov_view}
-
-            if do_diel:
-                dres = ps.run_diel(data, interval_min=int(interval_min), water_min_C=water_min,
-                                   min_coverage=min_cov / 100, r2_min=r2_min, roll_k=int(roll_k),
-                                   phase_method=phase_method)
-                fits, metrics = dres.fits, dres.metrics
-                res.update(fits=fits, metrics=metrics)
-            if do_annual:
-                ares = ps.run_annual(data, yr_type=yr_type, min_consec_days=int(min_consec),
-                                     min_record_pct=float(min_rec_pct),
-                                     water_min_C=water_min, min_coverage=min_cov / 100,
-                                     interval_min=int(interval_min), phase_method=phase_method)
-                ann = {"record": ares.record, "yearly": ares.yearly, "fits": ares.fits}
-                res.update(daily=ares.daily, ann=ann)
-
-            run_ts = pd.Timestamp.now()
-            rows = []
-            for sid, s, a in pair_list:
-                row = {"run_timestamp": run_ts.isoformat(timespec="seconds"),
-                       "site_id": sid, "stream_logger": s, "air_logger": a,
-                       "analyses": " + ".join(analyses),
-                       "interval_min": int(interval_min), "water_min_C": water_min,
-                       "min_day_coverage_pct": min_cov, "phase_method": phase_method,
-                       "date_from": dr0.date().isoformat(),
-                       "date_to": (dr1 - pd.Timedelta(days=1)).date().isoformat(),
-                       "n_paired_records": int((T_y["site_id"] == sid).sum())}
-                if do_annual:
-                    rec = ann["record"]
-                    r = rec[rec["site_id"] == sid] if len(rec) else rec
-                    row.update({"year_type": yr_type,
-                                "min_consec_days_per_year": int(min_consec),
-                                "min_record_pct": int(min_rec_pct),
-                                "annual_n_days": int(r["n_days_fit"].iloc[0]) if len(r) else 0})
-                    for c in ["AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope",
-                              "TS_AdjRsqr", "max_conseq_missing_days", "record_span_days",
-                              "pct_record_fit", "meets_record_pct"]:
-                        row["annual_" + c] = r[c].iloc[0] if len(r) else np.nan
-                if do_diel:
-                    row.update({
-                        "adjR2_min": r2_min, "roll_k": int(roll_k),
-                        "diel_n_days_fitted": int(fits.loc[fits["site_id"] == sid, "date"].nunique()) if len(fits) else 0,
-                        "diel_n_days_kept": int((metrics["site_id"] == sid).sum()) if len(metrics) else 0,
-                        "diel_median_AmpRatio": _site_med(metrics, sid, "AmpRatio"),
-                        "diel_median_PhaseLag_h": _site_med(metrics, sid, "PhaseLag_h"),
-                        "diel_median_Ratio_Mean_K": _site_med(metrics, sid, "Ratio_Mean_K"),
-                    })
-                rows.append(row)
-            res.update(summary=pd.DataFrame(rows), sig=run_sig, run_ts=run_ts)
+            # the same call a script would make: pastatemp.run_loggers()
+            result = ps.run_loggers(
+                grids, sel_pairs.reset_index(drop=True), analyses=pkg_analyses,
+                date_range=(dr0, dr1 - pd.Timedelta(days=1)), interval_min=int(interval_min),
+                water_min_C=water_min, min_coverage=min_cov / 100, phase_method=phase_method,
+                yr_type=yr_type, max_gap_days=int(max_gap), max_missing_pct=float(max_missing_pct),
+                min_record_pct=float(min_rec_pct),
+                r2_min=r2_min, roll_k=int(roll_k))
+            res = {"result": result, "T_y": result.paired, "summary": result.summary,
+                   "analyses": list(analyses), "yr_type": yr_type,
+                   "max_gap": int(max_gap), "max_missing_pct": int(max_missing_pct),
+                   "min_rec_pct": int(min_rec_pct),
+                   "sig": run_sig, "run_ts": result.run_ts}
+            if result.diel is not None:
+                res.update(fits=result.diel.fits, metrics=result.diel.metrics)
+            if result.annual is not None:
+                a = result.annual
+                res.update(daily=a.daily, ann={"record": a.record, "yearly": a.yearly, "fits": a.fits})
             st.session_state["res"] = res
         except Exception as exc:
             st.error("Run failed: " + str(exc))
@@ -676,7 +544,7 @@ if "res" not in st.session_state:
     st.stop()
 
 res = st.session_state["res"]
-if "analyses" not in res:          # results from an older app version in this session
+if "result" not in res:            # results from an older app version in this session
     st.session_state.pop("res")
     st.stop()
 T_y, summary = res["T_y"], res["summary"]
@@ -707,48 +575,19 @@ tabs = dict(zip(tab_names, st.tabs(tab_names)))
 # -- Annual results --
 if ran_annual:
     daily, ann = res["daily"], res["ann"]
-    ytype = res["yr_type"]
+    ares = res["result"].annual
 
     @_fragment
     def _annual_plots():
         sid = st.selectbox("Site", summary["site_id"].tolist(), key="ann_site")
-        d = daily[daily["site_id"] == sid]
-        f = ann["fits"]
-        f = f[(f["site_id"] == sid) & (f["year"] == "all")] if len(f) else f
-        if d.empty:
+        if daily[daily["site_id"] == sid].empty:
             st.info("No daily means for this site.")
             return
         c1, c2 = st.columns([2, 1])
-        fig = go.Figure()
-        for med, col, ycol in (("air", AIR_COLOR, "tavg_air_C"), ("water", WATER_COLOR, "tavg_wat_C")):
-            fig.add_trace(go.Scattergl(x=d["date"], y=d[ycol], mode="markers", name=med + " daily mean",
-                                       marker={"size": 4, "color": col, "opacity": 0.5}))
-            fr = f[f["medium"] == med] if len(f) else f
-            if len(fr):
-                fig.add_trace(go.Scatter(x=d["date"], y=an.sinusoid_value(fr.iloc[0], d["date"], ytype),
-                                         mode="lines", name=med + " annual fit",
-                                         line={"color": col, "width": 2}))
-        fig.update_layout(height=340, yaxis_title="Daily mean temperature (°C)",
-                          margin={"l": 20, "r": 20, "t": 20, "b": 20})
         with c1:
-            st.plotly_chart(fig, width="stretch")
-        rec = ann["record"][ann["record"]["site_id"] == sid] if len(ann["record"]) else ann["record"]
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scattergl(x=d["tavg_air_C"], y=d["tavg_wat_C"], mode="markers",
-                                    name="days", marker={"size": 4, "color": WATER_COLOR, "opacity": 0.5}))
-        lo, hi = float(d["tavg_air_C"].min()), float(d["tavg_air_C"].max())
-        fig2.add_trace(go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines", name="1:1",
-                                  line={"dash": "dash", "color": "gray", "width": 1}))
-        if len(rec) and np.isfinite(rec["TS__Slope"].iloc[0]):
-            sl, yi = rec["TS__Slope"].iloc[0], rec["TS_YInt"].iloc[0]
-            fig2.add_trace(go.Scatter(x=[lo, hi], y=[yi + sl * lo, yi + sl * hi], mode="lines",
-                                      name="slope {:.2f}".format(sl),
-                                      line={"color": "black", "width": 2}))
-        fig2.update_layout(height=340, xaxis_title="Air (°C)", yaxis_title="Stream (°C)",
-                           margin={"l": 20, "r": 20, "t": 20, "b": 20},
-                           legend={"orientation": "h", "y": -0.25})
+            st.plotly_chart(pp.plot_annual_fit(ares, sid), width="stretch")
         with c2:
-            st.plotly_chart(fig2, width="stretch")
+            st.plotly_chart(pp.plot_thermal_sensitivity(ares, sid), width="stretch")
 
     with tabs["Annual signal"]:
         rec_t = ann["record"]
@@ -763,12 +602,14 @@ if ran_annual:
                                                      for r in low.itertuples())))
             yl0 = ann["yearly"]
             if len(yl0):
-                fail = yl0[~yl0["meets_min_consec"]]
+                fail = yl0[~yl0["meets_year_criteria"]]
                 if len(fail):
                     st.info(
-                        "Years without {} consecutive days in the fit get no signal metrics: {}.".format(
-                            res["min_consec"], "; ".join(
-                                "{} {} ({} d)".format(r.site_id, r.year, r.longest_consec_days)
+                        "Years with more than {} consecutive no-data days, or more than {}% "
+                        "no-data days, were dropped (no signal metrics): {}.".format(
+                            res["max_gap"], res["max_missing_pct"], "; ".join(
+                                "{} {} ({} consecutive no-data days, {:.0f}% no data)".format(
+                                    r.site_id, r.year, r.longest_gap_days, r.pct_missing)
                                 for r in fail.itertuples())))
             short_sites = rec_t[(rec_t["record_span_days"] > 0) & (rec_t["record_span_days"] < 300)]
             if len(short_sites):
@@ -786,31 +627,25 @@ if ran_annual:
                    .format(res["min_rec_pct"]) +
                    "phase lag is water − air in days. TS__Slope is the daily thermal sensitivity "
                    "(stream ~ air, Kelleher et al. 2012).")
-        st.markdown("#### By " + ytype + " year")
+        st.markdown("#### By " + res["yr_type"] + " year")
         st.dataframe(ann["yearly"], hide_index=True, width="stretch")
-        st.caption("A year needs a run of at least {} consecutive days in the fit "
-                   "(longest_consec_days, counted on paired daily means with stream > 1 °C). "
-                   "Other years (meets_min_consec = False) show no AmpRatio, phase lag or mean "
-                   "ratio; their thermal sensitivity is still reported, as in PASTA. count is all "
-                   "paired days, including cold days.".format(res["min_consec"]))
+        st.caption("A no-data day has no daily mean with stream > 1 °C. A year is dropped "
+                   "(meets_year_criteria = False) when longest_gap_days (consecutive no-data days) "
+                   "> {} or pct_missing > {}%: "
+                   "no AmpRatio, phase lag or mean ratio; its thermal sensitivity is still "
+                   "reported, as in PASTA. count is all paired days, including cold days."
+                   .format(res["max_gap"], res["max_missing_pct"]))
         _annual_plots()
         yl = ann["yearly"].dropna(subset=["AmpRatio", "PhaseLag_d"]) if len(ann["yearly"]) else ann["yearly"]
         if len(yl):
-            fig3 = go.Figure()
-            for i, (sid, d) in enumerate(yl.groupby("site_id", sort=False)):
-                fig3.add_trace(go.Scatter(x=d["PhaseLag_d"], y=d["AmpRatio"], mode="markers+text",
-                                          text=d["year"].astype(str), textposition="top center",
-                                          name=sid, marker={"size": 9, "color": SITE_COLORS[i % len(SITE_COLORS)]}))
-            fig3.update_layout(height=340, xaxis_title="Phase lag (d)", yaxis_title="Amplitude ratio",
-                               margin={"l": 20, "r": 20, "t": 30, "b": 20},
-                               title={"text": "Annual signal by year", "font": {"size": 14}})
-            st.plotly_chart(fig3, width="stretch")
+            st.plotly_chart(pp.plot_annual_by_year(ares), width="stretch")
         with st.expander("Annual sinusoid fits"):
             st.dataframe(_r4(ann["fits"]), hide_index=True, width="stretch")
 
 # -- Diel results --
 if ran_diel:
     fits, metrics = res["fits"], res["metrics"]
+    dres = res["result"].diel
 
     @_fragment
     def _metric_plots():
@@ -819,25 +654,8 @@ if ran_diel:
             x_mode = st.radio("x axis", ["Date", "Day of year"], key="xmode")
             ar_cap = st.checkbox("Hide AmpRatio ≥ 1.2", value=True, key="arcap",
                                  help="Values this high are usually poor data (Rmd plot filter).")
-        xcol = "date" if x_mode == "Date" else "DOY"
-        m = metrics[metrics["AmpRatio"] < 1.2] if ar_cap else metrics
-        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05,
-                            subplot_titles=["Amplitude ratio (water / air)",
-                                            "Phase lag (h, water − air)",
-                                            "Mean ratio (K, water / air)"])
-        for i, (sid, d) in enumerate(m.groupby("site_id", sort=False)):
-            col = SITE_COLORS[i % len(SITE_COLORS)]
-            for row, y, roll in ((1, "AmpRatio", "AR_roll7"), (2, "PhaseLag_h", "PH_roll7"),
-                                 (3, "Ratio_Mean_K", None)):
-                fig.add_trace(go.Scattergl(x=d[xcol], y=d[y], mode="markers", name=sid,
-                                           legendgroup=sid, showlegend=(row == 1),
-                                           marker={"size": 5, "color": col, "opacity": 0.7}),
-                              row=row, col=1)
-                if roll:
-                    fig.add_trace(go.Scatter(x=d[xcol], y=d[roll], mode="lines", name=sid + " roll",
-                                             legendgroup=sid, showlegend=False,
-                                             line={"color": col, "width": 2}), row=row, col=1)
-        fig.update_layout(height=720, margin={"l": 20, "r": 20, "t": 40, "b": 20})
+        fig = pp.plot_diel_metrics(dres, x="date" if x_mode == "Date" else "DOY",
+                                   max_amp_ratio=1.2 if ar_cap else None)
         with c1:
             st.plotly_chart(fig, width="stretch")
 
@@ -854,24 +672,7 @@ if ran_diel:
             return
         with c2:
             day = st.select_slider("Day", options=days, value=days[len(days) // 2], key="fit_day")
-        obs = T_y[(T_y["site_id"] == sid) & (pd.to_datetime(T_y["DateTime_r"]).dt.date == day)]
-        fig = go.Figure()
-        txt = []
-        for medium, col, ycol in (("air", AIR_COLOR, "air_temp"), ("water", WATER_COLOR, "str_temp")):
-            fr = fs[(fs["date"].dt.date == day) & (fs["medium"] == medium)]
-            fig.add_trace(go.Scatter(x=obs["DateTime_r"], y=obs[ycol], mode="markers", name=medium,
-                                     marker={"size": 4, "color": col, "opacity": 0.6}))
-            if len(fr):
-                r = fr.iloc[0]
-                fig.add_trace(go.Scatter(x=obs["DateTime_r"], y=dl.sinusoid_value(r, obs["DateTime_r"]),
-                                         mode="lines", name=medium + " fit",
-                                         line={"color": col, "width": 2}))
-                txt.append("{}: amp {:.2f} °C, phase {:.2f} h, adj R² {:.2f}".format(
-                    medium, r["amplitude_C"], r["phase_h"], r["AdjRsqr"]))
-        fig.update_layout(height=320, yaxis_title="Temperature (°C)",
-                          margin={"l": 20, "r": 20, "t": 20, "b": 20})
-        st.plotly_chart(fig, width="stretch")
-        st.caption("  |  ".join(txt))
+        st.plotly_chart(pp.plot_diel_day(dres, sid, day), width="stretch")
 
     with tabs["Diel"]:
         if metrics.empty:
@@ -887,37 +688,20 @@ if ran_diel:
 # ---- 6: Download -------------------------------------------------------------
 st.markdown("---")
 st.subheader("6 - Download")
-stem = "PASTA_" + res["run_ts"].strftime("%Y%m%d_%H%M")
-outputs = {stem + "_run_summary.csv": ("Run summary", summary),
-           stem + "_pairs.csv": ("Pairs used", res.get("pairs", pd.DataFrame())),
-           stem + "_coverage.csv": ("Data coverage", res.get("coverage", pd.DataFrame())),
-           stem + "_paired_df.csv": ("Paired data", T_y)}
-if ran_annual:
-    outputs.update({
-        stem + "_annual_metrics.csv": ("Annual metrics (record)", res["ann"]["record"]),
-        stem + "_annual_metrics_yearly.csv": ("Annual metrics (by year)", res["ann"]["yearly"]),
-        stem + "_annual_fits.csv": ("Annual fits", res["ann"]["fits"]),
-        stem + "_daily_means.csv": ("Daily means", res["daily"]),
-    })
-if ran_diel:
-    outputs.update({
-        stem + "_diel_metrics.csv": ("Diel metrics", res["metrics"]),
-        stem + "_diel_fits.csv": ("Diel fits", res["fits"]),
-    })
+result = res["result"]
+stem = result.default_prefix()
+tables = result.tables()            # same tables as result.to_csv() / to_zip() in a script
+outputs = {"{}_{}.csv".format(stem, k): (FILE_LABELS.get(k, k), df) for k, df in tables.items()}
 
 
 @st.cache_data(show_spinner=False)
-def _zip_outputs(sig, _outputs):
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for fn, (_, df) in _outputs.items():
-            z.writestr(fn, df.to_csv(index=False))
-    return buf.getvalue()
+def _zip_outputs(sig, _result):
+    return _result.to_zip()
 
 
 st.download_button(
     "⬇️ Download all ({} files, .zip)".format(len(outputs)),
-    data=_zip_outputs(res["sig"] + stem + str(len(outputs)), outputs),
+    data=_zip_outputs(res["sig"] + stem + str(len(outputs)), result),
     file_name=stem + ".zip", mime="application/zip", type="primary", key="dl_zip")
 
 with st.expander("Download single files"):
@@ -942,14 +726,9 @@ with o2:
     save_clicked = st.button("💾 Save to folder", width="stretch")
 if save_clicked:
     try:
-        target = _clean_out_dir(out_dir)
-        target.mkdir(parents=True, exist_ok=True)
-        written = []
-        for fn, (_, df) in outputs.items():
-            df.to_csv(target / fn, index=False)
-            written.append(fn)
-        st.success("Saved {} files to `{}`".format(len(written), target))
-        st.caption("  \n".join(written))
+        written = ps.save_tables(tables, out_dir, stem)
+        st.success("Saved {} files to `{}`".format(len(written), written[0].parent))
+        st.caption("  \n".join(p.name for p in written))
     except PermissionError:
         st.error("No permission to write to `{}`. Choose a folder you can write to, "
                  "e.g. inside C:\\Users\\<you>\\Documents.".format(out_dir))

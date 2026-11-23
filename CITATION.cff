@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "pastatemp: Paired Air and Stream Temperature Analysis (PASTA) at the annual and diel scales"
+type: software
+authors:
+  - family-names: Hare
+    given-names: Danielle
+    # orcid: "https://orcid.org/0000-0000-0000-0000"
+    # affiliation: ""
+version: 0.2.0
+date-released: "2026-11-23"
+license: MIT
+repository-code: "https://github.com/Haredkb/PASTA_diel"
+keywords:
+  - stream temperature
+  - air temperature
+  - groundwater
+  - thermal sensitivity
+  - PASTA
+abstract: >-
+  Python package and Streamlit app for paired air and stream temperature
+  analysis (PASTA). Reads logger files, sorts air and stream loggers, pairs
+  them by name (data as a last resort), and fits annual and diel sinusoids to
+  report amplitude ratio, phase lag, mean ratio and thermal sensitivity.
+  A Python port of the PASTA and Diel PASTA R code.

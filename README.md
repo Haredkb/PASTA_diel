@@ -1,7 +1,8 @@
-# PASTA: annual + diel (`pasta_signals` package and app)
+# PASTA: annual + diel (`pastatemp` package and app)
 
 **Paired Air and Stream Temperature Analysis** at the annual and diel scales, as a Python package
-(`pasta_signals`) with a Streamlit app on top. A Python port of two R code bases:
+(`pastatemp`) with a Streamlit app on top. Every step of the app is a package function, so a script gives
+the same tables as the app. A Python port of two R code bases:
 
 - **Annual signal**: the PASTA Shiny app (`900_SupportScripts/PASTA`: `R/paired_annualT_signals.R`,
   `R/stream_thermal_sensitivity.R`, `therm_analysis()` in `R/rundata_v1.R`).
@@ -11,56 +12,105 @@ Both run by default; either can be switched off.
 
 ## Package
 
-Install (from this folder):
+Install:
 
 ```
-pip install -e .            # package only (numpy, pandas)
-pip install -e .[app,test]  # plus Streamlit app and pytest
+pip install "pastatemp[plots]"                                  # from PyPI, once published
+pip install "git+https://github.com/Haredkb/PASTA_diel"         # from GitHub
+pip install -e ".[app,plots,test]"                              # from this folder, with app and tests
 ```
 
-The two main functions take a DataFrame whose **first four columns** are, in order,
+`numpy` and `pandas` are the only requirements; `[plots]` adds Plotly for the figures.
+The old name `pasta_signals` still imports (with a deprecation warning).
+
+### The app, step by step, as functions
+
+| App step | Function |
+|---|---|
+| 1 Logger files | `read_loggers(folder_or_paths)` → `{name: Series}` |
+| 2 Air or stream? | `classify_loggers(loggers)` |
+| 3 Pairs (names first) | `pair_loggers(loggers)` |
+| 4 Date range and coverage | `coverage(loggers, pairs)`, `common_period(cov)`, `date_range(cov, "all" \| "common" \| (start, end))`, `coverage_in_range(cov, start, end)`, `clip_loggers()` |
+| 4 Run | `run_loggers(loggers, pairs, date_range=..., **settings)` (all of step 4 in one call) |
+| 5 Results | `res.summary`, `res.annual.record / .yearly / .fits / .daily`, `res.diel.metrics / .fits` |
+| 5 Figures | `pastatemp.plots`: `plot_loggers`, `plot_pair`, `plot_coverage`, `plot_annual_fit`, `plot_thermal_sensitivity`, `plot_annual_by_year`, `plot_diel_metrics`, `plot_diel_day` |
+| 6 Download / save | `res.to_zip(path)`, `res.to_csv(folder)`, `save_tables(res.tables(), folder)` |
+
+```python
+import pastatemp as pt
+
+# whole app in one call: read, sort, pair (names first), run both, save
+res = pt.run_folder("path/to/logger_csvs", date_range="common", out_dir="path/to/output")
+
+# or step by step, e.g. to set pairs from field notes
+loggers = pt.read_loggers("path/to/logger_csvs")
+pt.classify_loggers(loggers)                        # air / stream table
+pairs = pt.pair_loggers(loggers)                    # suggested pairs (edit if needed)
+pairs = [("HF-003", "HF-003", "HF_103"), ("HF_005", "HF_005", "HF_101")]
+cov = pt.coverage(loggers, pairs)
+pt.coverage_in_range(cov, *pt.date_range(cov, "common"))   # does the range cover all sites?
+res = pt.run_loggers(loggers, pairs, date_range="common",
+                     max_gap_days=50, max_missing_pct=75, min_record_pct=75,
+                     phase_method="atan2")
+res.summary                                         # the app's run summary
+res.to_zip("PASTA_results.zip")                     # the app's "Download all"
+
+from pastatemp import plots
+plots.plot_annual_fit(res.annual, "HF-003").show()
+```
+
+Settings (all optional, same defaults as the app): `water_min_C=0.99`, `min_coverage=0.75`,
+`phase_method="atan2"`, `yr_type="water"`, `max_gap_days=50`, `max_missing_pct=75`, `min_record_pct=75`, `r2_min=0.7`,
+`roll_k=7`, `analyses=("annual", "diel")`.
+
+The analysis functions also take a DataFrame directly, whose **first four columns** are, in order,
 `site_id, date/time, stream °C, air °C` (column names don't matter; same convention as the R code):
 
 ```python
-import pasta_signals as ps
-
-ann  = ps.run_annual(df, yr_type="water")   # sub-daily records or daily means
-diel = ps.run_diel(df)                      # sub-daily records
-
-ann.record    # whole-record AmpRatio, PhaseLag_d, Ratio_Mean, thermal sensitivity, gap check
-ann.yearly    # the same per water/calendar year
-diel.metrics  # AmpRatio, PhaseLag_h, mean ratios for every day passing the R² filter
-diel.summary  # per-site medians
-
-both = ps.run_pasta(df)                     # both, with one summary row per site
-both = ps.run_pasta(df, analyses=("annual",))
-both.to_csv("output_folder")
+ann  = pt.run_annual(df, yr_type="water")   # sub-daily records or daily means
+diel = pt.run_diel(df)                      # sub-daily records
+both = pt.run_pasta(df, analyses=("annual",))
 ```
 
-Starting from a folder of logger CSVs:
-
-```python
-res = ps.run_folder("path/to/logger_csvs", out_dir="path/to/output")   # read, sort, pair, run both
-res.pairs, res.summary
-
-# or step by step, e.g. to set pairs from field notes
-loggers = ps.read_loggers("path/to/logger_csvs")
-ps.classify_loggers(loggers)                     # air / stream table
-pairs = ps.pair_loggers(loggers)                 # suggested pairs (edit if needed)
-data = ps.pair_data(loggers, [("HF-003", "HF-003", "HF_103"), ("HF_005", "HF_005", "HF_101")])
-res = ps.run_pasta(data)
-```
-
-Command line:
+Command line (`pastatemp` after installing, or `python -m pastatemp`):
 
 ```
-python -m pasta_signals "path/to/logger_csvs" --out "path/to/output"
-python -m pasta_signals FOLDER --only annual --year-type calendar
-python -m pasta_signals FOLDER --phase-method atan       # reproduce the R phase formulas
-python -m pasta_signals FOLDER --pair HF-003 HF-003 HF_103 --pair HF_005 HF_005 HF_101
+pastatemp "path/to/logger_csvs" --out "path/to/output" --zip
+pastatemp FOLDER --date-range common --only annual --year-type calendar
+pastatemp FOLDER --date-range 2024-10-01:2025-09-30 --max-gap-days 30 --min-record-pct 80
+pastatemp FOLDER --phase-method atan       # reproduce the R phase formulas
+pastatemp FOLDER --pair HF-003 HF-003 HF_103 --pair HF_005 HF_005 HF_101
 ```
 
-Every function has a docstring with its settings (`help(ps.run_annual)`). Tests: `python -m pytest tests`.
+Every function has a docstring with its settings (`help(pt.run_loggers)`). Tests: `python -m pytest tests`.
+
+## R package
+
+`R/pastatemp` is the same package in pure R (no Python needed): the same functions, settings, defaults
+and output tables. On the LLC, Harvard Forest and TB03 data the two give the same tables to ~1e-11; the
+only differences are a few 3-decimal diel means (8 of ~2,700 values) that sit exactly on a rounding edge
+and round the other way by 0.001.
+
+```r
+# install.packages("remotes")
+remotes::install_github("Haredkb/PASTA_diel", subdir = "R/pastatemp")
+
+library(pastatemp)
+res <- run_folder("path/to/logger_csvs", date_range = "common")
+res$summary
+zip_pasta(res, "PASTA_results.zip")
+
+loggers <- read_loggers("path/to/logger_csvs")
+pairs <- list(c("HF-003", "HF-003", "HF_103"), c("HF_005", "HF_005", "HF_101"))
+res <- run_loggers(loggers, pairs, max_gap_days = 50, min_record_pct = 75)
+plot_annual_fit(res$annual, "HF-003")
+```
+
+Function names match Python (`read_loggers`, `classify_loggers`, `pair_loggers`, `coverage`, `date_range`,
+`run_loggers`, `run_annual`, `run_diel`, ...). Results are lists (`res$annual$record`, `res$diel$metrics`);
+`pasta_tables(res)`, `write_pasta(res, folder)` and `zip_pasta(res, path)` stand in for Python's
+`res.tables()`, `res.to_csv()` and `res.to_zip()`. Figures use base R graphics (`?pasta_plots`). Times are
+kept as the logger clock shows them (POSIXct in "UTC"). Tests: `testthat::test_local("R/pastatemp")`.
 
 ## App
 
@@ -118,12 +168,18 @@ back through the download buttons. **Save to folder** writes to the server, not 
      with `rday = 2π·d/365` (d = day of water year or calendar year), for the whole record and for each year.
      Outputs: AmpRatio, PhaseLag_d, Ratio_Mean, daily thermal sensitivity (stream ~ air slope;
      Kelleher et al. 2012), longest data gap and day count.
-     Two sliders set how much data is needed. Both count only *fit days*: paired daily means left after the
-     1 °C drop (stream > 1 °C), the days that actually enter the fit.
-     - **Single year: minimum consecutive days** (default 100, `min_consec_days=`): a year is reported only if
-       its longest run of consecutive fit days (`longest_consec_days`) reaches this. Other years get no
-       AmpRatio, phase lag or mean ratio (`meets_min_consec = False`); their thermal sensitivity is still
-       reported, as in PASTA.
+     Three sliders set how much data is needed. All are applied after the 1 °C drop: a *no-data day* is a
+     day with no paired daily mean above 1 °C (no records, too little of the day logged, or a stream mean
+     ≤ 1 °C).
+     - **Single year: maximum consecutive days with no data** (default 50, `max_gap_days=`): a year with
+       a longer run of no-data days (`longest_gap_days`) is dropped. Days of the water or calendar year
+       before the record starts or after it ends count as no data, so a partial first or last year is
+       dropped when that stretch is longer than the limit.
+     - **Single year: maximum total days with no data** (default 75 % of the year, `max_missing_pct=`): a
+       year whose no-data days (`missing_days`, `pct_missing` of 365/366) add up to more than this is also
+       dropped.
+     - A dropped year (`meets_year_criteria = False`) gets no AmpRatio, phase lag or mean ratio; its
+       thermal sensitivity is still reported, as in PASTA.
      - **Whole record: minimum % of record** (default 75 %, `min_record_pct=`): the whole-record fit uses every
        fit day, and is reported only if `pct_record_fit = 100 · n_days_fit / record_span_days` reaches this,
        where `record_span_days` runs from the first to the last paired day (cold days included). Otherwise
@@ -175,10 +231,11 @@ Annual signal:
 - **Thermal-sensitivity columns** are named `TS__Slope`, `TS_AdjRsqr` and `TS_YInt` (R: `TS__Slope`,
   `AdjRsqr`, `YInt`) so they are not confused with the sinusoid fit's R² and intercept.
 - Daily means are computed from the paired sub-daily records, so air and stream means cover the same times.
-- **Minimum data**: R (`TMy_output`) blanks a year's signal metrics when `count` < 100 days in total, where
-  `count` includes the cold days that are then left out of the fit, and it has no rule for the whole record.
-  The app asks each year for a run of consecutive fit days, and the whole record for fit days on a minimum
-  share of its span (see step 5 above).
+- **Which years count**: R (`TMy_output`) blanks a year's signal metrics when it has fewer than 100 days,
+  counting the cold days that are then left out of the fit, and has no rule for the whole record. The app
+  instead drops a year with more than `max_gap_days` consecutive no-data days or more than
+  `max_missing_pct` % no-data days, and asks the whole record for fit days on a set share of its span
+  (see step 5 above).
 
 Diel:
 
@@ -192,10 +249,15 @@ Checked against `DielPASTA_Share/output`: with coverage 0, amplitude, R², RMSE 
 `EG_wma_dielPASTA_fits.csv`, and phase differs by exactly the 1 h offset above. AmpRatio and
 Ratio_Mean_K match `EG_dielPASTA_metrics.csv` on all 649 rows.
 
+## Citing
+
+Cite the version you used; GitHub's **Cite this repository** button reads `CITATION.cff`. Each GitHub release
+is archived on Zenodo with its own DOI.
+
 ## CPU-saving techniques (same as Tempest)
 
-- `st.cache_data` on file parsing and gridding (keyed on file bytes), the pair-score matrix, the overview
-  plot frame and CSV encoding, so widget changes do not re-parse files.
+- `st.cache_data` on file parsing and gridding (keyed on file bytes), the pair-score matrix, data
+  coverage, the zip and CSV encoding, so widget changes do not re-parse files.
 - Every plot trace is downsampled to ≤ 2,000 points and drawn with `Scattergl`.
 - The analysis runs only when **Run PASTA** is pressed. Results live in `st.session_state`, and
   the app warns when settings have changed since the last run.
@@ -206,15 +268,20 @@ Ratio_Mean_K match `EG_dielPASTA_metrics.csv` on all 649 rows.
 
 | File | Purpose |
 |---|---|
-| `pasta_signals/core.py` | Main functions: `run_annual`, `run_diel`, `run_pasta`, `run_folder`, `pair_data` |
-| `pasta_signals/annual.py` | Daily means, annual sinusoid fits, thermal sensitivity, gap check |
-| `pasta_signals/diel.py` | Daily sinusoid fits (vectorised) and diel metrics |
-| `pasta_signals/readers.py` | Logger CSV parsing (`read_loggers`) |
-| `pasta_signals/phase.py` | Phase from the sine/cosine coefficients: `atan2` (default) or the R `atan` formulas |
-| `pasta_signals/pairing.py` | Air / stream classification and pair suggestions |
-| `pasta_signals/__main__.py` | Command line |
+| `pastatemp/core.py` | Main functions: `run_folder`, `run_loggers`, `run_pasta`, `run_annual`, `run_diel`, `run_summary`, `pair_data` |
+| `pastatemp/annual.py` | Daily means, annual sinusoid fits, thermal sensitivity, gap check, rules for which years and records count |
+| `pastatemp/diel.py` | Daily sinusoid fits (vectorised) and diel metrics |
+| `pastatemp/readers.py` | Logger CSV parsing (`read_loggers`) |
+| `pastatemp/pairing.py` | Air / stream classification and pair suggestions |
+| `pastatemp/coverage.py` | Data coverage, common period, date range, clipping |
+| `pastatemp/export.py` | Zip and folder output, typed-path cleaning |
+| `pastatemp/plots.py` | The app's Plotly figures |
+| `pastatemp/phase.py` | Phase from the sine/cosine coefficients: `atan2` (default) or the R `atan` formulas |
+| `pastatemp/__main__.py` | Command line |
+| `pasta_signals/` | Old package name, re-exports `pastatemp` |
 | `tests/` | Synthetic-signal tests (known amplitude ratios and lags) |
 | `pyproject.toml` | Package metadata (`pip install -e .`) |
-| `diel_pasta_app.py` | Streamlit app (uses the package) |
+| `LICENSE`, `CITATION.cff`, `.zenodo.json` | MIT license; citation and Zenodo (DOI) metadata |
+| `diel_pasta_app.py` | Streamlit app (only the interface; every step calls the package) |
 | `requirements.txt` | Packages (auto-installed on launch if missing) |
 | `run_diel_pasta.bat` | Windows launcher with its own venv |

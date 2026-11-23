@@ -21,6 +21,12 @@ import pandas as pd
 
 from . import annual as _annual
 from . import diel as _diel
+# import the functions, not the module: the package exposes a function named
+# `coverage`, which hides the submodule of the same name on reload
+from .coverage import clip_loggers as _clip_loggers
+from .coverage import coverage as _coverage
+from .coverage import coverage_in_range as _coverage_in_range
+from .coverage import date_range as _date_range
 from .phase import DEFAULT_PHASE_METHOD, check_method
 from .pairing import classify_loggers, pair_loggers
 from .readers import read_loggers
@@ -83,20 +89,43 @@ class AnnualResult:
 
 @dataclass
 class PastaResult:
-    """Output of run_pasta() / run_folder()."""
+    """Output of run_pasta() / run_loggers() / run_folder()."""
     annual: AnnualResult = None
     diel: DielResult = None
-    summary: pd.DataFrame = None    # one row per site, both analyses side by side
-    pairs: pd.DataFrame = None      # set by run_folder()
+    summary: pd.DataFrame = None    # one row per site: settings, annual and diel side by side
+    pairs: pd.DataFrame = None      # pairing table used (run_loggers / run_folder)
+    coverage: pd.DataFrame = None   # data coverage per site in the date range (run_loggers)
+    paired: pd.DataFrame = None     # site_id, DateTime_r, str_temp, air_temp (stream > water_min_C)
+    date_range: tuple = None        # (start, end) analysed, end exclusive (run_loggers)
+    run_ts: pd.Timestamp = None
+    settings: dict = field(default_factory=dict)
+
+    def tables(self):
+        """The same tables the app downloads, in the same order: run_summary, pairs,
+        coverage, paired_df, annual_metrics, annual_metrics_yearly, annual_fits,
+        daily_means, diel_metrics, diel_fits (missing ones are skipped)."""
+        t = {"run_summary": self.summary, "pairs": self.pairs, "coverage": self.coverage,
+             "paired_df": self.paired}
+        if self.annual is not None:
+            t.update(self.annual.tables())
+        if self.diel is not None:
+            t.update({"diel_metrics": self.diel.metrics, "diel_fits": self.diel.fits})
+        return {k: v for k, v in t.items() if v is not None}
+
+    def default_prefix(self):
+        """'PASTA_YYYYmmdd_HHMM', the app's file-name stem."""
+        ts = self.run_ts if self.run_ts is not None else pd.Timestamp.now()
+        return "PASTA_" + ts.strftime("%Y%m%d_%H%M")
 
     def to_csv(self, folder, prefix="PASTA"):
-        tables = {"run_summary": self.summary}
-        if self.pairs is not None:
-            tables["pairs"] = self.pairs
-        for r in (self.annual, self.diel):
-            if r is not None:
-                tables.update(r.tables())
-        return _write(tables, folder, prefix)
+        """Write every table as <prefix>_<table>.csv in `folder`; returns the paths."""
+        return _write(self.tables(), folder, prefix)
+
+    def to_zip(self, path=None, prefix=None):
+        """All tables in one zip (the app's *Download all*). Returns the bytes, and
+        also writes them to `path` when given."""
+        from .export import tables_to_zip
+        return tables_to_zip(self.tables(), prefix or self.default_prefix(), path)
 
 
 # ==============================================================================
@@ -174,7 +203,7 @@ def run_diel(data, interval_min=None, water_min_C=0.99, min_coverage=0.75,
     roll_k:        centred rolling-mean window (days) for AR_roll7 / PH_roll7.
     phase_method:  'atan2' (default): phase_h = hour of the fitted daily peak, lag
                    wrapped into (-12, 12] h. 'atan': the Diel PASTA R formula, to
-                   reproduce R results (phase confined to 6-18 h; see pasta_signals.phase).
+                   reproduce R results (phase confined to 6-18 h; see pastatemp.phase).
 
     Returns DielResult(paired, fits, metrics, summary, settings).
     """
@@ -205,7 +234,7 @@ def run_diel(data, interval_min=None, water_min_C=0.99, min_coverage=0.75,
     return DielResult(paired, fits, metrics, pd.DataFrame(rows), settings)
 
 
-def run_annual(data, yr_type="water", min_consec_days=100, min_record_pct=75,
+def run_annual(data, yr_type="water", max_gap_days=50, max_missing_pct=75, min_record_pct=75,
                water_min_C=0.99, min_coverage=0.75, interval_min=None,
                phase_method=DEFAULT_PHASE_METHOD):
     """
@@ -217,9 +246,13 @@ def run_annual(data, yr_type="water", min_consec_days=100, min_record_pct=75,
                    Sub-daily records are averaged to daily means first; daily means are
                    used as they are.
     yr_type:       'water' (1 Oct – 30 Sep, named by the year it ends) or 'calendar'.
-    min_consec_days: a year needs a run of at least this many consecutive fit days
-                   (paired daily means with stream > 1 °C, i.e. after the 1 °C drop).
-                   Other years get no AmpRatio / PhaseLag_d / Ratio_Mean in `yearly`.
+    max_gap_days, max_missing_pct:
+                   a year is dropped (no AmpRatio / PhaseLag_d / Ratio_Mean in `yearly`)
+                   when its longest run of consecutive missing days is more than
+                   max_gap_days (default 50), or its missing days are more than
+                   max_missing_pct % of the year (default 75). A missing day has no fit
+                   day: no data, too little of the day logged, or a stream mean <= 1 °C
+                   (i.e. counted after the 1 °C drop).
     min_record_pct: the whole record needs fit days on at least this % of the record
                    span (first to last paired day). Otherwise `record` gets no
                    AmpRatio / PhaseLag_d / Ratio_Mean. All fit days are used.
@@ -229,7 +262,7 @@ def run_annual(data, yr_type="water", min_consec_days=100, min_record_pct=75,
     interval_min:  logging interval for sub-daily data; inferred when None.
     phase_method:  'atan2' (default): phase_d = day of the fitted peak, lag wrapped
                    into (-182.5, 182.5] d. 'atan': the PASTA R formula, to reproduce
-                   R results (phase confined to 182.5-365 d; see pasta_signals.phase).
+                   R results (phase confined to 182.5-365 d; see pastatemp.phase).
 
     Returns AnnualResult(daily, record, yearly, fits, settings).
     """
@@ -245,11 +278,13 @@ def run_annual(data, yr_type="water", min_consec_days=100, min_record_pct=75,
         paired = _to_paired(d, interval_min, water_min_C)
         daily = _annual.daily_means(paired, min_coverage=min_coverage, interval_min=interval_min)
     check_method(phase_method)
-    res = _annual.annual_metrics(daily, yr_type=yr_type, min_consec_days=int(min_consec_days),
+    res = _annual.annual_metrics(daily, yr_type=yr_type, max_gap_days=int(max_gap_days),
+                                 max_missing_pct=float(max_missing_pct),
                                  min_record_pct=float(min_record_pct),
                                  phase_method=phase_method)
     rec = res["record"]
-    settings = {"yr_type": yr_type, "min_consec_days": min_consec_days,
+    settings = {"yr_type": yr_type, "max_gap_days": max_gap_days,
+                "max_missing_pct": max_missing_pct,
                 "min_record_pct": min_record_pct, "water_min_C": water_min_C,
                 "min_coverage": min_coverage, "interval_min": interval_min,
                 "phase_method": phase_method}
@@ -271,50 +306,156 @@ def run_pasta(data, analyses=ANALYSES, **kwargs):
         raise ValueError("analyses must be one or both of " + str(ANALYSES))
 
     def _kw(fn):
-        names = fn.__code__.co_varnames[:fn.__code__.co_argcount]
-        return {k: v for k, v in kwargs.items() if k in names}
+        return {k: v for k, v in kwargs.items() if k in _argnames(fn)}
 
-    out = PastaResult()
-    parts = []
+    unknown = set(kwargs) - set(_argnames(run_annual)) - set(_argnames(run_diel))
+    if unknown:
+        raise TypeError("Unknown settings: " + ", ".join(sorted(unknown)))
+
+    out = PastaResult(run_ts=pd.Timestamp.now())
     if "annual" in analyses:
         out.annual = run_annual(data, **_kw(run_annual))
-        rec = out.annual.record
-        if len(rec):
-            cols = ["AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "TS_AdjRsqr",
-                    "max_conseq_missing_days", "count", "n_days_fit", "record_span_days",
-                    "pct_record_fit", "meets_record_pct"]
-            parts.append(rec[["site_id"] + cols].rename(
-                columns={c: "annual_" + c for c in cols}))
     if "diel" in analyses:
         out.diel = run_diel(data, **_kw(run_diel))
-        parts.append(out.diel.summary)
-    summary = None
-    for p in parts:
-        summary = p if summary is None else summary.merge(p, on="site_id", how="outer")
-    out.summary = summary if summary is not None else pd.DataFrame()
+
+    d = _standardize(data)
+    water_min = kwargs.get("water_min_C", 0.99)
+    interval = kwargs.get("interval_min")
+    for r in (out.annual, out.diel):
+        if r is not None and r.settings.get("interval_min"):
+            interval = r.settings["interval_min"]
+    keep = d[d["water"] > water_min]
+    out.paired = pd.DataFrame({"site_id": keep["site_id"], "DateTime_r": keep["datetime"],
+                               "str_temp": keep["water"], "air_temp": keep["air"]}).reset_index(drop=True)
+    out.settings = {"analyses": analyses, "interval_min": interval, "water_min_C": water_min,
+                    **{k: v for r in (out.annual, out.diel) if r is not None
+                       for k, v in r.settings.items() if k != "interval_min"}}
+    out.summary = run_summary(out, d)
     return out
 
 
-def run_folder(folder, analyses=ANALYSES, pairs=None, interval_min=15, out_dir=None,
-               **kwargs):
-    """
-    Read every logger CSV in a folder, sort air vs stream, pair them, and run PASTA.
+def _argnames(fn):
+    return fn.__code__.co_varnames[:fn.__code__.co_argcount]
 
-    pairs:   optional list of (site_id, stream_logger, air_logger) to override the
-             suggested pairs (e.g. from field notes).
-    out_dir: if given, all tables are written there as CSVs.
+
+def run_summary(res, data=None, pairs=None, date_range=None):
+    """
+    One row per site, as in the app's run summary: run time, loggers, settings,
+    then the annual whole-record metrics and the diel medians.
+    """
+    s = res.settings
+    d = _standardize(data) if data is not None and "water" not in getattr(data, "columns", []) else data
+    sites = list(pd.unique(d["site_id"])) if d is not None else []
+    pmap = {}
+    if pairs is not None:
+        pmap = {r.site_id: (r.stream, r.air) for r in pairs.itertuples()}
+        sites += [p for p in pmap if p not in sites]
+    if date_range is not None:
+        d0, d1 = date_range[0], date_range[1] - pd.Timedelta(days=1)
+    elif d is not None and len(d):
+        d0, d1 = d["datetime"].min(), d["datetime"].max()
+    else:
+        d0 = d1 = pd.NaT
+    n_rec = res.paired["site_id"].value_counts() if res.paired is not None else pd.Series(dtype=int)
+    rows = []
+    for sid in sites:
+        row = {"run_timestamp": res.run_ts.isoformat(timespec="seconds") if res.run_ts is not None else "",
+               "site_id": sid,
+               "stream_logger": pmap.get(sid, (None, None))[0],
+               "air_logger": pmap.get(sid, (None, None))[1],
+               "analyses": " + ".join(s.get("analyses", ())),
+               "interval_min": s.get("interval_min"), "water_min_C": s.get("water_min_C"),
+               "min_day_coverage_pct": 100 * s["min_coverage"] if "min_coverage" in s else np.nan,
+               "phase_method": s.get("phase_method"),
+               "date_from": d0.date().isoformat() if pd.notna(d0) else "",
+               "date_to": d1.date().isoformat() if pd.notna(d1) else "",
+               "n_paired_records": int(n_rec.get(sid, 0))}
+        if res.annual is not None:
+            rec = res.annual.record
+            r = rec[rec["site_id"] == sid] if len(rec) else rec
+            row.update({"year_type": s.get("yr_type"),
+                        "max_gap_days_per_year": s.get("max_gap_days"),
+                        "max_missing_pct_per_year": s.get("max_missing_pct"),
+                        "min_record_pct": s.get("min_record_pct"),
+                        "annual_n_days": int(r["n_days_fit"].iloc[0]) if len(r) else 0})
+            for c in ["AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "TS_AdjRsqr",
+                      "max_conseq_missing_days", "record_span_days", "pct_record_fit",
+                      "meets_record_pct"]:
+                row["annual_" + c] = r[c].iloc[0] if len(r) else np.nan
+        if res.diel is not None:
+            ds = res.diel.summary
+            r = ds[ds["site_id"] == sid] if len(ds) else ds
+            row.update({"adjR2_min": s.get("r2_min"), "roll_k": s.get("roll_k")})
+            for c in ["diel_n_days_fitted", "diel_n_days_kept", "diel_median_AmpRatio",
+                      "diel_median_PhaseLag_h", "diel_median_Ratio_Mean_K"]:
+                row[c] = r[c].iloc[0] if len(r) else (0 if "n_days" in c else np.nan)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _pair_table(pairs):
+    """List of (site_id, stream, air) or a pairing DataFrame -> DataFrame."""
+    if isinstance(pairs, pd.DataFrame):
+        t = pairs.copy()
+        if "include" in t.columns:
+            t = t[t["include"].astype(bool)].drop(columns=["include"])
+        return t[t["air"].notna()].reset_index(drop=True)
+    t = pd.DataFrame([tuple(p) for p in pairs], columns=["site_id", "stream", "air"])
+    t["basis"] = "user"
+    return t
+
+
+def run_loggers(loggers, pairs=None, analyses=ANALYSES, date_range="all", interval_min=15,
+                **kwargs):
+    """
+    The app's whole run as one call: logger series + pairs -> data coverage, date
+    range, pairing, and the annual and/or diel analysis.
+
+    loggers:    {name: gridded Series} from read_loggers().
+    pairs:      pairing table (site_id, stream, air[, include]) or list of
+                (site_id, stream, air); suggested by pair_loggers() when None.
+    date_range: 'all' (each site's full record), 'common' (only dates every site
+                has paired data) or (start, end) dates, inclusive.
+    kwargs:     settings for run_annual() / run_diel() (water_min_C, min_coverage,
+                phase_method, yr_type, max_gap_days, max_missing_pct, min_record_pct,
+                r2_min, roll_k).
+
+    Returns PastaResult with pairs, coverage (per site in the range) and date_range set.
+    """
+    pair_table = pair_loggers(loggers, interval_min=interval_min) if pairs is None else _pair_table(pairs)
+    pair_table = pair_table[pair_table["air"].notna()].reset_index(drop=True)
+    if pair_table.empty:
+        raise ValueError("No air-stream pairs to run.")
+    if pair_table["site_id"].duplicated().any():
+        raise ValueError("Site IDs must be unique: "
+                         + ", ".join(pair_table["site_id"][pair_table["site_id"].duplicated()]))
+    cov = _coverage(loggers, pair_table, interval_min)
+    start, end = _date_range(cov, date_range)
+    data = pair_data(_clip_loggers(loggers, start, end), pair_table)
+    res = run_pasta(data, analyses=analyses, interval_min=interval_min, **kwargs)
+    res.pairs = pair_table
+    res.coverage = _coverage_in_range(cov, start, end)
+    res.date_range = (start, end)
+    res.summary = run_summary(res, data, pairs=pair_table, date_range=(start, end))
+    return res
+
+
+def run_folder(folder, analyses=ANALYSES, pairs=None, interval_min=15, out_dir=None,
+               date_range="all", **kwargs):
+    """
+    Read every logger CSV in a folder, sort air vs stream, pair them, and run PASTA
+    (read_loggers() + run_loggers()).
+
+    pairs:      optional list of (site_id, stream_logger, air_logger) to override the
+                suggested pairs (e.g. from field notes).
+    date_range: 'all', 'common' or (start, end); see run_loggers().
+    out_dir:    if given, all tables are written there as CSVs (PASTA_<table>.csv).
 
     Returns PastaResult with .pairs set to the pairing table that was used.
     """
     loggers = read_loggers(folder, interval_min=interval_min)
-    if pairs is None:
-        pair_table = pair_loggers(loggers, interval_min=interval_min)
-    else:
-        pair_table = pd.DataFrame(pairs, columns=["site_id", "stream", "air"])
-        pair_table["basis"] = "user"
-    data = pair_data(loggers, pair_table)
-    res = run_pasta(data, analyses=analyses, interval_min=interval_min, **kwargs)
-    res.pairs = pair_table
+    res = run_loggers(loggers, pairs=pairs, analyses=analyses, date_range=date_range,
+                      interval_min=interval_min, **kwargs)
     if out_dir:
         res.to_csv(out_dir)
     return res

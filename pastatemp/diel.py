@@ -40,7 +40,7 @@ def fit_daily_sinusoids(T_y, min_coverage=0.75, interval_min=15,
     TMd_output(): amplitude_C, phase_h, AdjRsqr, RMSE, sinSlope, cosSlope,
     YInt, medium, site_id, date, year, plus n_obs.
     phase_method: 'atan2' (phase_h = hour of the fitted daily peak) or 'atan'
-    (the R formula; see pasta_signals.phase).
+    (the R formula; see pastatemp.phase).
     """
     if T_y.empty:
         return pd.DataFrame()

@@ -4,6 +4,7 @@ Reading logger files: HOBOware exports and simple date/time + temperature CSVs.
 
 import io
 import re
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -113,24 +114,46 @@ def read_logger(path, interval_min=15):
     return to_grid(parse_logger_csv(path.read_bytes(), path.name), interval_min)
 
 
-def read_loggers(source, interval_min=15):
+def read_loggers(source, interval_min=15, on_error="warn"):
     """
     Read several logger CSVs.
 
-    source: a folder (every *.csv in it is read) or a list of file paths.
+    source:   a folder (every *.csv in it is read) or a list of file paths.
+    on_error: 'warn' (default) skips files that are not logger files with a warning,
+              as the app does; 'raise' stops at the first bad file.
     Returns {logger_name: gridded Series}. Logger names come from the file
-    names ('HF_005 2026-07-22 12_44_20 EDT.csv' -> 'HF_005').
+    names ('HF_005 2026-07-22 12_44_20 EDT.csv' -> 'HF_005'). Skipped files are
+    listed in the result's `.skipped` dict {file name: reason}.
     """
+    if on_error not in ("warn", "raise"):
+        raise ValueError("on_error must be 'warn' or 'raise'")
     if isinstance(source, (str, Path)) and Path(source).is_dir():
         paths = sorted(Path(source).glob("*.csv"))
         if not paths:
             raise ValueError("No .csv files found in " + str(source))
     else:
         paths = [Path(p) for p in ([source] if isinstance(source, (str, Path)) else source)]
-    out = {}
+    out, skipped = {}, {}
     for p in paths:
         name = logger_name_from_filename(p.name)
         if name in out:
             name = p.stem
-        out[name] = read_logger(p, interval_min)
-    return out
+        try:
+            out[name] = read_logger(p, interval_min)
+        except ValueError as exc:
+            if on_error == "raise":
+                raise
+            skipped[p.name] = str(exc)
+            warnings.warn("Skipped " + p.name + ": " + str(exc), stacklevel=2)
+    if not out:
+        raise ValueError("None of the files could be read as logger files: "
+                         + "; ".join(skipped.values()))
+    return LoggerDict(out, skipped)
+
+
+class LoggerDict(dict):
+    """{logger_name: gridded Series}, plus .skipped = {file name: reason}."""
+
+    def __init__(self, data, skipped=None):
+        super().__init__(data)
+        self.skipped = dict(skipped or {})

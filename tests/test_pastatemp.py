@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import pasta_signals as ps
+import pastatemp as ps
 
 # Known signals
 ANN_AMP_AIR, ANN_AMP_WAT, ANN_LAG_D = 12.0, 6.0, 10.0      # annual AmpRatio 0.5, lag 10 d
@@ -71,26 +71,50 @@ def test_diel_rejects_daily_means(data):
 
 def test_short_years_get_no_signal_metrics(data):
     short = data[data["time"] < "2024-12-31"]      # 91 days
-    res = ps.run_annual(short, min_consec_days=100)
-    assert res.yearly["AmpRatio"].isna().all()
-    assert not res.yearly["meets_min_consec"].any()
-    assert res.yearly.iloc[0]["longest_consec_days"] == 91
+    res = ps.run_annual(short)                     # WY2025: no data from 31 Dec to 30 Sep
+    y = res.yearly.iloc[0]
+    assert y["n_days_in_year"] == 365 and y["missing_days"] == 274
+    assert y["longest_gap_days"] == 274
+    assert np.isnan(y["AmpRatio"]) and not y["meets_year_criteria"]
     # the whole record is judged by % of record, not by the yearly rule
     rec = res.record.iloc[0]
     assert rec["meets_record_pct"] and rec["pct_record_fit"] == 100.0
 
 
-def test_yearly_rule_needs_consecutive_days():
-    # 160 fit days in WY2025, but split by a 20-day gap into runs of 80 and 80
-    days = pd.date_range("2024-10-01", periods=180, freq="D")
-    days = days[(days < "2024-12-20") | (days >= "2025-01-09")]
+def _wy2025(gap_days=0, cold_days=0, keep_every=1):
+    """WY2025 (365 days): one run of `gap_days` days removed (from day 200), `cold_days`
+    days with stream <= 1 °C just before it, and optionally only every n-th day kept."""
+    days = pd.date_range("2024-10-01", "2025-09-30", freq="D")
     rd = 2 * np.pi * np.arange(len(days)) / 365
-    df = pd.DataFrame({"s": "X", "date": days, "w": 10 + 4 * np.sin(rd), "a": 10 + 8 * np.sin(rd)})
-    y = ps.run_annual(df, min_consec_days=100).yearly.iloc[0]
-    assert y["n_days_fit"] == 160 and y["longest_consec_days"] == 80
-    assert not y["meets_min_consec"] and np.isnan(y["AmpRatio"])
-    y = ps.run_annual(df, min_consec_days=80).yearly.iloc[0]
-    assert y["meets_min_consec"] and np.isfinite(y["AmpRatio"])
+    w = 10 + 4 * np.sin(rd)
+    w[200 - cold_days:200] = 0.5
+    df = pd.DataFrame({"s": "X", "date": days, "w": w, "a": 10 + 8 * np.sin(rd)})
+    df = df.drop(index=range(200, 200 + gap_days))
+    return df[df.index % keep_every == 0]
+
+
+def test_year_dropped_when_no_data_gap_longer_than_max():
+    y = ps.run_annual(_wy2025(50)).yearly.iloc[0]            # default max_gap_days = 50
+    assert y["longest_gap_days"] == 50 and y["meets_year_criteria"] and np.isfinite(y["AmpRatio"])
+    y = ps.run_annual(_wy2025(51)).yearly.iloc[0]
+    assert y["longest_gap_days"] == 51 and not y["meets_year_criteria"] and np.isnan(y["AmpRatio"])
+    assert np.isfinite(y["TS__Slope"])                       # thermal sensitivity still reported
+    assert ps.run_annual(_wy2025(51), max_gap_days=60).yearly.iloc[0]["meets_year_criteria"]
+
+
+def test_year_dropped_when_total_no_data_over_pct():
+    # every 4th day kept: gaps of only 3 days, but 273 of 365 days (74.8 %) have no data
+    y = ps.run_annual(_wy2025(keep_every=4)).yearly.iloc[0]  # default max_missing_pct = 75
+    assert y["longest_gap_days"] == 3 and y["pct_missing"] == 74.8 and y["meets_year_criteria"]
+    y = ps.run_annual(_wy2025(keep_every=4), max_missing_pct=70).yearly.iloc[0]
+    assert not y["meets_year_criteria"] and np.isnan(y["AmpRatio"])
+
+
+def test_cold_days_count_as_no_data():
+    # 30 days with stream <= 1 °C right before 30 days with no records = a 60-day gap
+    y = ps.run_annual(_wy2025(30, cold_days=30)).yearly.iloc[0]
+    assert y["count"] == 335 and y["n_days_fit"] == 305 and y["longest_gap_days"] == 60
+    assert not y["meets_year_criteria"]
 
 
 def test_record_pct_counts_days_after_1C_drop():
@@ -100,13 +124,13 @@ def test_record_pct_counts_days_after_1C_drop():
     wat = np.r_[np.full(80, 0.5), 8 + 5 * np.sin(rd)]
     air = np.r_[np.full(80, -5.0), 10 + 10 * np.sin(rd)]
     df = pd.DataFrame({"s": "X", "date": days, "w": wat, "a": air})
-    res = ps.run_annual(df, min_consec_days=100)          # default 75 %
+    res = ps.run_annual(df, max_gap_days=365, max_missing_pct=100)   # record: default 75 %
     rec = res.record.iloc[0]
     assert rec["count"] == 200 and rec["n_days_fit"] == 120 and rec["record_span_days"] == 200
     assert rec["pct_record_fit"] == 60.0 and not rec["meets_record_pct"]
     assert np.isnan(rec["AmpRatio"]) and np.isfinite(rec["TS__Slope"])
     y = res.yearly.iloc[0]
-    assert y["longest_consec_days"] == 120 and y["meets_min_consec"]   # the year itself passes
+    assert y["meets_year_criteria"]                        # the year itself passes
     rec = ps.run_annual(df, min_record_pct=60).record.iloc[0]
     assert rec["meets_record_pct"] and np.isfinite(rec["AmpRatio"])
     f = res.fits
@@ -153,12 +177,12 @@ def test_run_folder_reads_pairs_and_writes(tmp_path):
     ("HF_005", "HF_101", None),
 ])
 def test_name_match_levels(stream, air, level):
-    from pasta_signals.pairing import name_match_level
+    from pastatemp.pairing import name_match_level
     assert name_match_level(stream, air) == level
 
 
 def test_names_beat_data():
-    from pasta_signals.pairing import suggest_pairs
+    from pastatemp.pairing import suggest_pairs
     # data prefers the wrong air logger for every stream; names must still win
     score = {("ST_001", "AT_002"): 0.9, ("ST_001", "AT_001"): 0.5,
              ("ST_002", "AT_001"): 0.9, ("ST_002", "AT_002"): 0.5}
@@ -185,7 +209,7 @@ def _phase_case(peak_air_h, peak_wat_h, ann_peak_air, ann_peak_wat):
 
 
 def test_phase_helpers():
-    from pasta_signals.phase import lag, phase
+    from pastatemp.phase import lag, phase
     w = 2 * np.pi * 150 / 365                                     # peak on day 150
     assert phase(np.sin(w), np.cos(w), 365, "atan2") == pytest.approx(150)
     assert phase(np.sin(w), np.cos(w), 365, "atan") == pytest.approx(332.5)   # R: half a year late
@@ -219,3 +243,80 @@ def test_atan2_fixes_annual_peaks_straddling_july():
     assert a2["PhaseLag_d"] == pytest.approx(15, abs=1)
     assert abs(a1["PhaseLag_d"] - 15) > 100            # the R formula's half-year jump
     assert a1["AmpRatio"] == a2["AmpRatio"]            # amplitude is unaffected
+
+
+# ---- app steps as package functions ---------------------------------------------
+
+def _two_site_loggers():
+    """Site A: Oct 2024 - Sep 2025; site B starts 1 Jan 2025 -> common period from 2025-01-01."""
+    t, wat, air = _synthetic(end="2025-09-30 23:45")
+    s = lambda v, idx: pd.Series(v, index=idx)
+    late = t >= "2025-01-01"
+    return {"ST_001": s(wat, t), "AT_001": s(air, t),
+            "ST_002": s(wat[late], t[late]), "AT_002": s(air[late], t[late])}
+
+
+def test_coverage_and_date_range():
+    lg = _two_site_loggers()
+    pairs = [("S1", "ST_001", "AT_001"), ("S2", "ST_002", "AT_002")]
+    cov = ps.coverage(lg, pairs)
+    c0, c1 = ps.common_period(cov)
+    assert c0 == pd.Timestamp("2025-01-01")
+    start, end = ps.date_range(cov, "all")
+    assert (start, end) == (pd.Timestamp("2024-10-01"), pd.Timestamp("2025-10-01"))
+    inr = ps.coverage_in_range(cov, start, end)
+    assert not ps.all_sites_cover(inr) and inr.set_index("site_id").loc["S2", "status"].startswith("starts")
+    assert ps.all_sites_cover(ps.coverage_in_range(cov, *ps.date_range(cov, "common")))
+    assert ps.date_range(cov, ("2025-02-01", "2025-02-28")) == (pd.Timestamp("2025-02-01"),
+                                                                 pd.Timestamp("2025-03-01"))
+
+
+def test_run_loggers_common_period_and_outputs(tmp_path):
+    lg = _two_site_loggers()
+    res = ps.run_loggers(lg, date_range="common", water_min_C=-99)
+    assert list(res.pairs["site_id"]) == ["site_001", "site_002"]
+    assert res.date_range[0] == pd.Timestamp("2025-01-01")
+    assert res.paired["DateTime_r"].min() >= pd.Timestamp("2025-01-01")
+    s = res.summary.set_index("site_id")
+    assert s.loc["site_001", "date_from"] == "2025-01-01"
+    assert s.loc["site_001", "stream_logger"] == "ST_001" and s.loc["site_001", "air_logger"] == "AT_001"
+    assert {"annual_AmpRatio", "annual_pct_record_fit", "diel_median_AmpRatio",
+            "max_gap_days_per_year", "max_missing_pct_per_year"} <= set(res.summary.columns)
+    assert list(res.tables()) == ["run_summary", "pairs", "coverage", "paired_df", "annual_metrics",
+                                  "annual_metrics_yearly", "annual_fits", "daily_means",
+                                  "diel_metrics", "diel_fits"]
+    import zipfile, io
+    z = zipfile.ZipFile(io.BytesIO(res.to_zip(tmp_path / "r.zip", prefix="X")))
+    assert len(z.namelist()) == 10 and "X_run_summary.csv" in z.namelist()
+    assert (tmp_path / "r.zip").exists()
+    written = ps.save_tables(res.tables(), '"' + str(tmp_path / "out") + '"', "X")
+    assert len(written) == 10
+
+
+def test_run_pasta_rejects_unknown_setting(data):
+    with pytest.raises(TypeError):
+        ps.run_pasta(data, not_a_setting=100)
+
+
+def test_plots_build():
+    pytest.importorskip("plotly")
+    from pastatemp import plots as pp
+    lg = _two_site_loggers()
+    res = ps.run_loggers(lg, water_min_C=-99)
+    cov = ps.coverage(lg, res.pairs)
+    figs = [pp.plot_loggers(lg, {"ST_001": "stream", "AT_001": "air"}),
+            pp.plot_pair(lg, "ST_001", "AT_001"), pp.plot_coverage(cov, *res.date_range),
+            pp.plot_annual_fit(res.annual, "site_001"),
+            pp.plot_thermal_sensitivity(res.annual, "site_001"),
+            pp.plot_annual_by_year(res.annual), pp.plot_diel_metrics(res.diel),
+            pp.plot_diel_day(res.diel, "site_001", "2025-06-01")]
+    assert all(len(f.data) for f in figs)
+
+
+def test_old_name_still_imports():
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import pasta_signals
+        from pasta_signals import annual
+    assert pasta_signals.run_annual is ps.run_annual and annual is ps.annual

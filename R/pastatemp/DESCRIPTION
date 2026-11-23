@@ -1,0 +1,21 @@
+Package: pastatemp
+Type: Package
+Title: Paired Air and Stream Temperature Analysis (PASTA) at Annual and Diel Scales
+Version: 0.2.0
+Authors@R: person("Danielle", "Hare", role = c("aut", "cre", "cph"),
+    email = "maintainer@example.org")
+Description: Reads air and stream temperature logger files, sorts loggers into
+    air and stream, pairs them by name (logger data as a last resort), and fits
+    annual and diel sinusoids to paired records. Reports amplitude ratio, phase
+    lag, mean ratio and thermal sensitivity for every site, year and day. The R
+    twin of the 'pastatemp' Python package and its 'Streamlit' app: the same
+    functions, settings and output tables.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends: R (>= 4.0.0)
+Imports: stats, utils, graphics, grDevices
+Suggests: testthat (>= 3.0.0), withr, zip
+Config/testthat/edition: 3
+URL: https://github.com/Haredkb/PASTA_diel
+BugReports: https://github.com/Haredkb/PASTA_diel/issues
+Config/roxygen2/version: 8.1.1
