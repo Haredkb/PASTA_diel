@@ -123,6 +123,8 @@ def read_loggers(source, interval_min=15):
     """
     if isinstance(source, (str, Path)) and Path(source).is_dir():
         paths = sorted(Path(source).glob("*.csv"))
+        if not paths:
+            raise ValueError("No .csv files found in " + str(source))
     else:
         paths = [Path(p) for p in ([source] if isinstance(source, (str, Path)) else source)]
     out = {}

@@ -638,9 +638,10 @@ if st.button("Run PASTA", type="primary"):
                     rec = ann["record"]
                     r = rec[rec["site_id"] == sid] if len(rec) else rec
                     row.update({"year_type": yr_type, "min_days_per_year": int(min_days),
-                                "annual_n_days": int(r["count"].iloc[0]) if len(r) else 0})
+                                "annual_n_days": int(r["n_days_fit"].iloc[0]) if len(r) else 0})
                     for c in ["AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope",
-                              "TS_AdjRsqr", "max_conseq_missing_days"]:
+                              "TS_AdjRsqr", "max_conseq_missing_days", "years_used",
+                              "years_dropped"]:
                         row["annual_" + c] = r[c].iloc[0] if len(r) else np.nan
                 if do_diel:
                     row.update({
@@ -739,22 +740,40 @@ if ran_annual:
             st.plotly_chart(fig2, width="stretch")
 
     with tabs["Annual signal"]:
-        if len(daily):
-            span = daily.groupby("site_id")["date"].agg(lambda x: (x.max() - x.min()).days + 1)
-            short_sites = span[span < 300]
+        rec_t = ann["record"]
+        if len(rec_t):
+            none_ok = rec_t[rec_t["years_used"].fillna("") == ""]
+            if len(none_ok):
+                st.error(
+                    "No year meets the {}-day minimum for: {}. These sites have no whole-record "
+                    "annual metrics; lower **Minimum days per year** to include them.".format(
+                        res["min_days"], ", ".join(none_ok["site_id"])))
+            dropped = rec_t[(rec_t["years_dropped"].fillna("") != "") & (rec_t["years_used"].fillna("") != "")]
+            if len(dropped):
+                st.info(
+                    "Years with fewer than {} days were left out of the whole-record fit: {}.".format(
+                        res["min_days"], "; ".join("{} ({})".format(r.site_id, r.years_dropped)
+                                                    for r in dropped.itertuples())))
+            short_sites = rec_t[(rec_t["record_span_days"] > 0) & (rec_t["record_span_days"] < 300)]
             if len(short_sites):
                 st.warning(
-                    "Less than ~300 days of record for: "
-                    + ", ".join("{} ({} d)".format(k, v) for k, v in short_sites.items())
+                    "Less than ~300 days of record in the fit for: "
+                    + ", ".join("{} ({} d)".format(r.site_id, r.record_span_days)
+                                for r in short_sites.itertuples())
                     + ". An annual sinusoid fitted to part of a year is poorly constrained; "
                       "treat these annual metrics with caution.")
         st.markdown("#### Whole record")
         st.dataframe(ann["record"], hide_index=True, width="stretch")
-        st.caption("AmpRatio and mean ratio are water / air; phase lag is water − air in days. "
-                   "TS__Slope is the daily thermal sensitivity (stream ~ air, Kelleher et al. 2012).")
+        st.caption("Fitted only to the years that meet the minimum (years_used); shorter years "
+                   "are dropped first (years_dropped). AmpRatio and mean ratio are water / air; "
+                   "phase lag is water − air in days. TS__Slope is the daily thermal sensitivity "
+                   "(stream ~ air, Kelleher et al. 2012).")
         st.markdown("#### By " + ytype + " year")
         st.dataframe(ann["yearly"], hide_index=True, width="stretch")
-        st.caption("Years with fewer than {} daily means show no signal metrics.".format(res["min_days"]))
+        st.caption("A year needs at least {} days in the fit (n_days_fit: paired daily means with "
+                   "stream > 1 °C). Shorter years (meets_min_days = False) show no AmpRatio, phase "
+                   "lag or mean ratio; their thermal sensitivity is still reported, as in PASTA. "
+                   "count is all paired days, including cold days.".format(res["min_days"]))
         _annual_plots()
         yl = ann["yearly"].dropna(subset=["AmpRatio", "PhaseLag_d"]) if len(ann["yearly"]) else ann["yearly"]
         if len(yl):

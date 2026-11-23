@@ -73,6 +73,39 @@ def test_short_years_get_no_signal_metrics(data):
     short = data[data["time"] < "2024-12-31"]      # 91 days
     res = ps.run_annual(short, min_days=100)
     assert res.yearly["AmpRatio"].isna().all()
+    assert not res.yearly["meets_min_days"].any()
+    # no qualifying year -> no whole-record metrics either
+    rec = res.record.iloc[0]
+    assert np.isnan(rec["AmpRatio"]) and rec["years_used"] == "" and rec["years_dropped"] == "2025"
+
+
+def test_whole_record_drops_short_years(data):
+    # WY2025 complete; WY2026 cut to 60 days -> WY2026 must be left out of the record fit
+    d = data[data["time"] < "2025-11-30"]
+    res = ps.run_annual(d, min_days=100, water_min_C=-99)
+    rec = res.record.iloc[0]
+    assert rec["years_used"] == "2025" and rec["years_dropped"] == "2026"
+    full_wy2025 = ps.run_annual(data[data["time"] < "2025-10-01"], water_min_C=-99).record.iloc[0]
+    for c in ("AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "n_days_fit"):
+        assert rec[c] == full_wy2025[c]                 # identical to fitting WY2025 alone
+    yr = res.yearly.set_index("year")
+    assert yr.loc[2025, "meets_min_days"] and not yr.loc[2026, "meets_min_days"]
+    assert np.isnan(yr.loc[2026, "AmpRatio"]) and np.isfinite(yr.loc[2026, "TS__Slope"])
+    f = res.fits
+    assert set(f.loc[f["year"] == "2026", "meets_min_days"]) == {False}
+
+
+def test_min_days_counts_days_in_fit_not_cold_days():
+    # 150 paired days in WY2025, but 80 have stream <= 1 °C -> only 70 days enter the fit
+    days = pd.date_range("2024-10-01", periods=150, freq="D")
+    wat = np.r_[np.full(80, 0.5), np.linspace(3, 15, 70)]
+    air = np.r_[np.full(80, -5.0), np.linspace(5, 25, 70)]
+    df = pd.DataFrame({"s": "X", "date": days, "w": wat, "a": air})
+    res = ps.run_annual(df, min_days=100)
+    y = res.yearly.iloc[0]
+    assert y["count"] == 150 and y["n_days_fit"] == 70
+    assert not y["meets_min_days"] and np.isnan(y["AmpRatio"])
+    assert res.record.iloc[0]["years_dropped"] == "2025"
 
 
 def test_run_pasta_both_and_one(data):

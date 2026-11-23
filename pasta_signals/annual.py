@@ -155,24 +155,36 @@ def therm_analysis(daily, yr_type="water", phase_method=_ph.DEFAULT_PHASE_METHOD
     return pd.DataFrame(mets, columns=cols), pd.DataFrame(fits)
 
 
+def _fit_days(daily):
+    """Days that enter the sinusoid fit: paired daily means with stream > 1 °C."""
+    d = daily.dropna(subset=["tavg_wat_C", "tavg_air_C"])
+    return d[(d["tavg_wat_C"] > 1) & (d["tavg_wat_C"] < 70)]
+
+
 def annual_metrics(daily, yr_type="water", min_days=100,
                    phase_method=_ph.DEFAULT_PHASE_METHOD):
     """
     Returns dict of DataFrames:
-      'record' : whole-record metrics + gap check per site (PASTA metric_table)
-      'yearly' : per water/calendar year (TMy_output); signal metrics NA when count < min_days
-      'fits'   : annual sinusoid coefficients (whole record and per year)
+      'record' : whole-record metrics + gap check per site (PASTA metric_table), fitted
+                 only to the years that meet min_days (shorter years are dropped first)
+      'yearly' : per water/calendar year (TMy_output); signal metrics NA when the year
+                 has fewer than min_days days in the fit
+      'fits'   : annual sinusoid coefficients (year 'all' = whole record, and per year)
+
+    The min_days rule counts n_days_fit: paired daily means with stream > 1 °C, i.e.
+    the days that actually enter the sinusoid fit. 'count' (all paired days, as in the
+    R data_gap_check) is reported alongside.
     """
     if daily.empty:
         e = pd.DataFrame()
         return {"record": e, "yearly": e, "fits": e}
 
-    rec, rec_fits = therm_analysis(daily, yr_type, phase_method)
-    rec = rec.merge(data_gap_check(daily), on="site_id", how="left")
-    rec_fits["year"] = "all"
-
     d = daily.copy()
     d["year"] = water_year(d["date"]) if yr_type == "water" else pd.to_datetime(d["date"]).dt.year
+    fd = _fit_days(d)
+    n_fit = fd.groupby(["site_id", "year"]).size()
+
+    # ---- per year: fit every year, report metrics only for years that qualify
     yr_rows, yr_fits = [], []
     for yr, x in d.groupby("year", sort=True):
         m, f = therm_analysis(x, yr_type, phase_method)
@@ -183,9 +195,40 @@ def annual_metrics(daily, yr_type="water", min_days=100,
         yr_fits.append(f)
     yearly = pd.concat(yr_rows, ignore_index=True) if yr_rows else pd.DataFrame()
     if not yearly.empty:
-        short = yearly["count"] < min_days
-        yearly.loc[short, ["AmpRatio", "PhaseLag_d", "Ratio_Mean"]] = np.nan
+        yearly["n_days_fit"] = [int(n_fit.get((s, y), 0)) for s, y in zip(yearly["site_id"], yearly["year"])]
+        yearly["meets_min_days"] = yearly["n_days_fit"] >= min_days
+        yearly.loc[~yearly["meets_min_days"], ["AmpRatio", "PhaseLag_d", "Ratio_Mean"]] = np.nan
         yearly["year_type"] = yr_type
         yearly = yearly.sort_values(["site_id", "year"]).reset_index(drop=True)
-    fits = pd.concat([rec_fits] + yr_fits, ignore_index=True)
+
+    # ---- whole record: drop years that miss min_days, then fit what is left
+    ok_years = set(n_fit[n_fit >= min_days].index)
+    keep = [(s, y) in ok_years for s, y in zip(d["site_id"], d["year"])]
+    kept = d[keep]
+    rec, rec_fits = therm_analysis(kept, yr_type, phase_method)
+    rec = rec.merge(data_gap_check(kept), on="site_id", how="left")
+    rows = []
+    for sid in d["site_id"].unique():
+        yrs = sorted(int(y) for s, y in n_fit.index if s == sid)
+        used = [y for y in yrs if (sid, y) in ok_years]
+        k = kept[kept["site_id"] == sid]
+        rows.append({"site_id": sid,
+                     "years_used": " ".join(map(str, used)),
+                     "years_dropped": " ".join(str(y) for y in yrs if y not in used),
+                     "n_days_fit": int(n_fit[[(sid, y) for y in used]].sum()) if used else 0,
+                     "record_span_days": int((k["date"].max() - k["date"].min()).days + 1)
+                     if len(k) else 0})
+    rec = pd.DataFrame(rows).merge(rec, on="site_id", how="left")
+    cols = ["site_id", "AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "TS_AdjRsqr",
+            "TS_YInt", "max_conseq_missing_days", "count", "n_days_fit", "record_span_days",
+            "years_used", "years_dropped"]
+    rec = rec.reindex(columns=cols)
+    rec_fits["year"] = "all"
+
+    yf = pd.concat(yr_fits, ignore_index=True) if yr_fits else pd.DataFrame()
+    if len(yf):
+        yf["meets_min_days"] = [(s, int(y)) in ok_years for s, y in zip(yf["site_id"], yf["year"])]
+    if len(rec_fits):
+        rec_fits["meets_min_days"] = True
+    fits = pd.concat([rec_fits, yf], ignore_index=True)
     return {"record": rec, "yearly": yearly, "fits": fits}
