@@ -205,8 +205,9 @@ def run_diel(data, interval_min=None, water_min_C=0.99, min_coverage=0.75,
     return DielResult(paired, fits, metrics, pd.DataFrame(rows), settings)
 
 
-def run_annual(data, yr_type="water", min_days=100, water_min_C=0.99,
-               min_coverage=0.75, interval_min=None, phase_method=DEFAULT_PHASE_METHOD):
+def run_annual(data, yr_type="water", min_consec_days=100, min_record_pct=75,
+               water_min_C=0.99, min_coverage=0.75, interval_min=None,
+               phase_method=DEFAULT_PHASE_METHOD):
     """
     Annual-signal PASTA: fit temp ~ sin(2πd/365) + cos(2πd/365) to daily mean air
     and stream temperature for each site, for the whole record and for each year,
@@ -216,10 +217,12 @@ def run_annual(data, yr_type="water", min_days=100, water_min_C=0.99,
                    Sub-daily records are averaged to daily means first; daily means are
                    used as they are.
     yr_type:       'water' (1 Oct – 30 Sep, named by the year it ends) or 'calendar'.
-    min_days:      a year needs at least this many days in the fit (paired daily means
-                   with stream > 1 °C). Shorter years get no AmpRatio / PhaseLag_d /
-                   Ratio_Mean in `yearly` and are dropped before the whole-record fit
-                   (`record` lists years_used and years_dropped).
+    min_consec_days: a year needs a run of at least this many consecutive fit days
+                   (paired daily means with stream > 1 °C, i.e. after the 1 °C drop).
+                   Other years get no AmpRatio / PhaseLag_d / Ratio_Mean in `yearly`.
+    min_record_pct: the whole record needs fit days on at least this % of the record
+                   span (first to last paired day). Otherwise `record` gets no
+                   AmpRatio / PhaseLag_d / Ratio_Mean. All fit days are used.
     water_min_C:   sub-daily stream records at or below this are dropped before averaging.
                    Days with a stream mean ≤ 1 °C are always dropped (as in PASTA).
     min_coverage:  share of a full day of paired records needed for a daily mean.
@@ -242,10 +245,12 @@ def run_annual(data, yr_type="water", min_days=100, water_min_C=0.99,
         paired = _to_paired(d, interval_min, water_min_C)
         daily = _annual.daily_means(paired, min_coverage=min_coverage, interval_min=interval_min)
     check_method(phase_method)
-    res = _annual.annual_metrics(daily, yr_type=yr_type, min_days=int(min_days),
+    res = _annual.annual_metrics(daily, yr_type=yr_type, min_consec_days=int(min_consec_days),
+                                 min_record_pct=float(min_record_pct),
                                  phase_method=phase_method)
     rec = res["record"]
-    settings = {"yr_type": yr_type, "min_days": min_days, "water_min_C": water_min_C,
+    settings = {"yr_type": yr_type, "min_consec_days": min_consec_days,
+                "min_record_pct": min_record_pct, "water_min_C": water_min_C,
                 "min_coverage": min_coverage, "interval_min": interval_min,
                 "phase_method": phase_method}
     return AnnualResult(daily, rec, res["yearly"], res["fits"], settings)
@@ -277,7 +282,7 @@ def run_pasta(data, analyses=ANALYSES, **kwargs):
         if len(rec):
             cols = ["AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "TS_AdjRsqr",
                     "max_conseq_missing_days", "count", "n_days_fit", "record_span_days",
-                    "years_used", "years_dropped"]
+                    "pct_record_fit", "meets_record_pct"]
             parts.append(rec[["site_id"] + cols].rename(
                 columns={c: "annual_" + c for c in cols}))
     if "diel" in analyses:

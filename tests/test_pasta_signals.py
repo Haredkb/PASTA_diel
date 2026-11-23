@@ -71,41 +71,46 @@ def test_diel_rejects_daily_means(data):
 
 def test_short_years_get_no_signal_metrics(data):
     short = data[data["time"] < "2024-12-31"]      # 91 days
-    res = ps.run_annual(short, min_days=100)
+    res = ps.run_annual(short, min_consec_days=100)
     assert res.yearly["AmpRatio"].isna().all()
-    assert not res.yearly["meets_min_days"].any()
-    # no qualifying year -> no whole-record metrics either
+    assert not res.yearly["meets_min_consec"].any()
+    assert res.yearly.iloc[0]["longest_consec_days"] == 91
+    # the whole record is judged by % of record, not by the yearly rule
     rec = res.record.iloc[0]
-    assert np.isnan(rec["AmpRatio"]) and rec["years_used"] == "" and rec["years_dropped"] == "2025"
+    assert rec["meets_record_pct"] and rec["pct_record_fit"] == 100.0
 
 
-def test_whole_record_drops_short_years(data):
-    # WY2025 complete; WY2026 cut to 60 days -> WY2026 must be left out of the record fit
-    d = data[data["time"] < "2025-11-30"]
-    res = ps.run_annual(d, min_days=100, water_min_C=-99)
-    rec = res.record.iloc[0]
-    assert rec["years_used"] == "2025" and rec["years_dropped"] == "2026"
-    full_wy2025 = ps.run_annual(data[data["time"] < "2025-10-01"], water_min_C=-99).record.iloc[0]
-    for c in ("AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "n_days_fit"):
-        assert rec[c] == full_wy2025[c]                 # identical to fitting WY2025 alone
-    yr = res.yearly.set_index("year")
-    assert yr.loc[2025, "meets_min_days"] and not yr.loc[2026, "meets_min_days"]
-    assert np.isnan(yr.loc[2026, "AmpRatio"]) and np.isfinite(yr.loc[2026, "TS__Slope"])
-    f = res.fits
-    assert set(f.loc[f["year"] == "2026", "meets_min_days"]) == {False}
+def test_yearly_rule_needs_consecutive_days():
+    # 160 fit days in WY2025, but split by a 20-day gap into runs of 80 and 80
+    days = pd.date_range("2024-10-01", periods=180, freq="D")
+    days = days[(days < "2024-12-20") | (days >= "2025-01-09")]
+    rd = 2 * np.pi * np.arange(len(days)) / 365
+    df = pd.DataFrame({"s": "X", "date": days, "w": 10 + 4 * np.sin(rd), "a": 10 + 8 * np.sin(rd)})
+    y = ps.run_annual(df, min_consec_days=100).yearly.iloc[0]
+    assert y["n_days_fit"] == 160 and y["longest_consec_days"] == 80
+    assert not y["meets_min_consec"] and np.isnan(y["AmpRatio"])
+    y = ps.run_annual(df, min_consec_days=80).yearly.iloc[0]
+    assert y["meets_min_consec"] and np.isfinite(y["AmpRatio"])
 
 
-def test_min_days_counts_days_in_fit_not_cold_days():
-    # 150 paired days in WY2025, but 80 have stream <= 1 °C -> only 70 days enter the fit
-    days = pd.date_range("2024-10-01", periods=150, freq="D")
-    wat = np.r_[np.full(80, 0.5), np.linspace(3, 15, 70)]
-    air = np.r_[np.full(80, -5.0), np.linspace(5, 25, 70)]
+def test_record_pct_counts_days_after_1C_drop():
+    # 200 paired days; 80 have stream <= 1 °C -> 120 fit days = 60 % of the record
+    days = pd.date_range("2024-10-01", periods=200, freq="D")
+    rd = 2 * np.pi * np.arange(120) / 365
+    wat = np.r_[np.full(80, 0.5), 8 + 5 * np.sin(rd)]
+    air = np.r_[np.full(80, -5.0), 10 + 10 * np.sin(rd)]
     df = pd.DataFrame({"s": "X", "date": days, "w": wat, "a": air})
-    res = ps.run_annual(df, min_days=100)
+    res = ps.run_annual(df, min_consec_days=100)          # default 75 %
+    rec = res.record.iloc[0]
+    assert rec["count"] == 200 and rec["n_days_fit"] == 120 and rec["record_span_days"] == 200
+    assert rec["pct_record_fit"] == 60.0 and not rec["meets_record_pct"]
+    assert np.isnan(rec["AmpRatio"]) and np.isfinite(rec["TS__Slope"])
     y = res.yearly.iloc[0]
-    assert y["count"] == 150 and y["n_days_fit"] == 70
-    assert not y["meets_min_days"] and np.isnan(y["AmpRatio"])
-    assert res.record.iloc[0]["years_dropped"] == "2025"
+    assert y["longest_consec_days"] == 120 and y["meets_min_consec"]   # the year itself passes
+    rec = ps.run_annual(df, min_record_pct=60).record.iloc[0]
+    assert rec["meets_record_pct"] and np.isfinite(rec["AmpRatio"])
+    f = res.fits
+    assert set(f.loc[f["year"] == "all", "meets_criteria"]) == {False}
 
 
 def test_run_pasta_both_and_one(data):

@@ -161,30 +161,49 @@ def _fit_days(daily):
     return d[(d["tavg_wat_C"] > 1) & (d["tavg_wat_C"] < 70)]
 
 
-def annual_metrics(daily, yr_type="water", min_days=100,
+def longest_run(dates):
+    """Longest run of consecutive calendar days in `dates`."""
+    d = pd.to_datetime(pd.Series(dates)).dt.normalize().drop_duplicates().sort_values()
+    if d.empty:
+        return 0
+    brk = d.diff().dt.days.ne(1).cumsum()
+    return int(brk.value_counts().max())
+
+
+SIGNAL_COLS = ["AmpRatio", "PhaseLag_d", "Ratio_Mean"]
+
+
+def annual_metrics(daily, yr_type="water", min_consec_days=100, min_record_pct=75,
                    phase_method=_ph.DEFAULT_PHASE_METHOD):
     """
     Returns dict of DataFrames:
-      'record' : whole-record metrics + gap check per site (PASTA metric_table), fitted
-                 only to the years that meet min_days (shorter years are dropped first)
-      'yearly' : per water/calendar year (TMy_output); signal metrics NA when the year
-                 has fewer than min_days days in the fit
+      'record' : whole-record metrics + gap check per site (PASTA metric_table)
+      'yearly' : per water/calendar year (TMy_output)
       'fits'   : annual sinusoid coefficients (year 'all' = whole record, and per year)
 
-    The min_days rule counts n_days_fit: paired daily means with stream > 1 °C, i.e.
-    the days that actually enter the sinusoid fit. 'count' (all paired days, as in the
-    R data_gap_check) is reported alongside.
+    Both rules count fit days: paired daily means with stream > 1 °C, i.e. the days
+    left after the 1 °C drop that actually enter the sinusoid fit.
+      yearly : a year needs a run of at least `min_consec_days` consecutive fit days
+               (longest_consec_days); otherwise AmpRatio / PhaseLag_d / Ratio_Mean are NA
+               (meets_min_consec = False). Thermal sensitivity is still reported, as in PASTA.
+      record : fit days must cover at least `min_record_pct` % of the record span
+               (first to last paired day, cold days included): pct_record_fit =
+               100 * n_days_fit / record_span_days. Otherwise the signal metrics are NA
+               (meets_record_pct = False). All fit days are used; no year is dropped.
+    'count' (all paired days, as in the R data_gap_check) is reported alongside.
     """
     if daily.empty:
         e = pd.DataFrame()
         return {"record": e, "yearly": e, "fits": e}
 
     d = daily.copy()
-    d["year"] = water_year(d["date"]) if yr_type == "water" else pd.to_datetime(d["date"]).dt.year
+    d["date"] = pd.to_datetime(d["date"])
+    d["year"] = water_year(d["date"]) if yr_type == "water" else d["date"].dt.year
     fd = _fit_days(d)
     n_fit = fd.groupby(["site_id", "year"]).size()
+    run_fit = fd.groupby(["site_id", "year"])["date"].apply(longest_run)
 
-    # ---- per year: fit every year, report metrics only for years that qualify
+    # ---- per year: fit every year, report signal metrics only for years that qualify
     yr_rows, yr_fits = [], []
     for yr, x in d.groupby("year", sort=True):
         m, f = therm_analysis(x, yr_type, phase_method)
@@ -195,40 +214,40 @@ def annual_metrics(daily, yr_type="water", min_days=100,
         yr_fits.append(f)
     yearly = pd.concat(yr_rows, ignore_index=True) if yr_rows else pd.DataFrame()
     if not yearly.empty:
-        yearly["n_days_fit"] = [int(n_fit.get((s, y), 0)) for s, y in zip(yearly["site_id"], yearly["year"])]
-        yearly["meets_min_days"] = yearly["n_days_fit"] >= min_days
-        yearly.loc[~yearly["meets_min_days"], ["AmpRatio", "PhaseLag_d", "Ratio_Mean"]] = np.nan
+        key = list(zip(yearly["site_id"], yearly["year"]))
+        yearly["n_days_fit"] = [int(n_fit.get(k, 0)) for k in key]
+        yearly["longest_consec_days"] = [int(run_fit.get(k, 0)) for k in key]
+        yearly["meets_min_consec"] = yearly["longest_consec_days"] >= min_consec_days
+        yearly.loc[~yearly["meets_min_consec"], SIGNAL_COLS] = np.nan
         yearly["year_type"] = yr_type
         yearly = yearly.sort_values(["site_id", "year"]).reset_index(drop=True)
+    ok_years = {k for k, v in run_fit.items() if v >= min_consec_days}
 
-    # ---- whole record: drop years that miss min_days, then fit what is left
-    ok_years = set(n_fit[n_fit >= min_days].index)
-    keep = [(s, y) in ok_years for s, y in zip(d["site_id"], d["year"])]
-    kept = d[keep]
-    rec, rec_fits = therm_analysis(kept, yr_type, phase_method)
-    rec = rec.merge(data_gap_check(kept), on="site_id", how="left")
+    # ---- whole record: all fit days; signal metrics only if they cover enough of the span
+    rec, rec_fits = therm_analysis(d, yr_type, phase_method)
+    rec = rec.merge(data_gap_check(d), on="site_id", how="left")
     rows = []
-    for sid in d["site_id"].unique():
-        yrs = sorted(int(y) for s, y in n_fit.index if s == sid)
-        used = [y for y in yrs if (sid, y) in ok_years]
-        k = kept[kept["site_id"] == sid]
-        rows.append({"site_id": sid,
-                     "years_used": " ".join(map(str, used)),
-                     "years_dropped": " ".join(str(y) for y in yrs if y not in used),
-                     "n_days_fit": int(n_fit[[(sid, y) for y in used]].sum()) if used else 0,
-                     "record_span_days": int((k["date"].max() - k["date"].min()).days + 1)
-                     if len(k) else 0})
+    for sid, x in d.groupby("site_id", sort=False):
+        span = int((x["date"].max() - x["date"].min()).days + 1)
+        f = fd[fd["site_id"] == sid]
+        pct = 100.0 * len(f) / span if span else 0.0
+        rows.append({"site_id": sid, "n_days_fit": int(len(f)),
+                     "longest_consec_days": longest_run(f["date"]),
+                     "record_span_days": span, "pct_record_fit": round(pct, 1),
+                     "meets_record_pct": bool(pct >= min_record_pct)})
     rec = pd.DataFrame(rows).merge(rec, on="site_id", how="left")
+    rec.loc[~rec["meets_record_pct"], SIGNAL_COLS] = np.nan
     cols = ["site_id", "AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "TS_AdjRsqr",
-            "TS_YInt", "max_conseq_missing_days", "count", "n_days_fit", "record_span_days",
-            "years_used", "years_dropped"]
+            "TS_YInt", "max_conseq_missing_days", "count", "n_days_fit", "longest_consec_days",
+            "record_span_days", "pct_record_fit", "meets_record_pct"]
     rec = rec.reindex(columns=cols)
-    rec_fits["year"] = "all"
 
+    rec_fits["year"] = "all"
+    if len(rec_fits):
+        ok_rec = dict(zip(rec["site_id"], rec["meets_record_pct"]))
+        rec_fits["meets_criteria"] = [bool(ok_rec.get(s, False)) for s in rec_fits["site_id"]]
     yf = pd.concat(yr_fits, ignore_index=True) if yr_fits else pd.DataFrame()
     if len(yf):
-        yf["meets_min_days"] = [(s, int(y)) in ok_years for s, y in zip(yf["site_id"], yf["year"])]
-    if len(rec_fits):
-        rec_fits["meets_min_days"] = True
+        yf["meets_criteria"] = [(s, int(y)) in ok_years for s, y in zip(yf["site_id"], yf["year"])]
     fits = pd.concat([rec_fits, yf], ignore_index=True)
     return {"record": rec, "yearly": yearly, "fits": fits}

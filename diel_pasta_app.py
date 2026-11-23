@@ -574,10 +574,18 @@ with st.expander("Settings", expanded=True):
         yr_type = st.radio("Year type", ["water", "calendar"], horizontal=True,
                            disabled=not do_annual,
                            help="Water year runs 1 Oct – 30 Sep and is named by the year it ends.")
-        min_days = st.number_input("Minimum days per year", value=100, min_value=1, step=10,
-                                   disabled=not do_annual,
-                                   help="Years with fewer daily means get no AmpRatio, phase lag "
-                                        "or mean ratio (R: count < 100).")
+        min_consec = st.slider(
+            "Single year: minimum consecutive days", 1, 365, 100, 1,
+            disabled=not do_annual,
+            help="A year is fitted only if it has a run of at least this many consecutive "
+                 "daily means with stream > 1 °C (counted after the 1 °C drop). Other years "
+                 "get no AmpRatio, phase lag or mean ratio.")
+        min_rec_pct = st.slider(
+            "Whole record: minimum % of record", 0, 100, 75, 5,
+            disabled=not do_annual,
+            help="The whole-record fit is reported only if daily means with stream > 1 °C "
+                 "(after the 1 °C drop) cover at least this share of the record span, "
+                 "first to last paired day.")
     with s3:
         st.markdown("**Diel**")
         r2_min = st.slider("Minimum adjusted R² (air and water)", 0.0, 1.0, 0.70, 0.05,
@@ -592,7 +600,7 @@ with st.expander("Settings", expanded=True):
 
 run_sig = _sig(score_sig, tuple(pair_list), tuple(analyses), water_min, min_cov, yr_type,
                phase_method,
-               min_days, r2_min, roll_k, str(dr0), str(dr1))
+               min_consec, min_rec_pct, r2_min, roll_k, str(dr0), str(dr1))
 
 
 def _site_med(df, sid, col):
@@ -606,7 +614,7 @@ if st.button("Run PASTA", type="primary"):
             data = ps.pair_data(clipped, pair_list)
             T_y = data[data["str_temp"] > water_min].reset_index(drop=True)
             res = {"T_y": T_y, "analyses": list(analyses), "yr_type": yr_type,
-                   "min_days": int(min_days),
+                   "min_consec": int(min_consec), "min_rec_pct": int(min_rec_pct),
                    "pairs": sel_pairs.drop(columns=["include"]).reset_index(drop=True),
                    "coverage": cov_view}
 
@@ -617,7 +625,8 @@ if st.button("Run PASTA", type="primary"):
                 fits, metrics = dres.fits, dres.metrics
                 res.update(fits=fits, metrics=metrics)
             if do_annual:
-                ares = ps.run_annual(data, yr_type=yr_type, min_days=int(min_days),
+                ares = ps.run_annual(data, yr_type=yr_type, min_consec_days=int(min_consec),
+                                     min_record_pct=float(min_rec_pct),
                                      water_min_C=water_min, min_coverage=min_cov / 100,
                                      interval_min=int(interval_min), phase_method=phase_method)
                 ann = {"record": ares.record, "yearly": ares.yearly, "fits": ares.fits}
@@ -637,11 +646,13 @@ if st.button("Run PASTA", type="primary"):
                 if do_annual:
                     rec = ann["record"]
                     r = rec[rec["site_id"] == sid] if len(rec) else rec
-                    row.update({"year_type": yr_type, "min_days_per_year": int(min_days),
+                    row.update({"year_type": yr_type,
+                                "min_consec_days_per_year": int(min_consec),
+                                "min_record_pct": int(min_rec_pct),
                                 "annual_n_days": int(r["n_days_fit"].iloc[0]) if len(r) else 0})
                     for c in ["AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope",
-                              "TS_AdjRsqr", "max_conseq_missing_days", "years_used",
-                              "years_dropped"]:
+                              "TS_AdjRsqr", "max_conseq_missing_days", "record_span_days",
+                              "pct_record_fit", "meets_record_pct"]:
                         row["annual_" + c] = r[c].iloc[0] if len(r) else np.nan
                 if do_diel:
                     row.update({
@@ -742,18 +753,23 @@ if ran_annual:
     with tabs["Annual signal"]:
         rec_t = ann["record"]
         if len(rec_t):
-            none_ok = rec_t[rec_t["years_used"].fillna("") == ""]
-            if len(none_ok):
+            low = rec_t[~rec_t["meets_record_pct"].fillna(False).astype(bool)]
+            if len(low):
                 st.error(
-                    "No year meets the {}-day minimum for: {}. These sites have no whole-record "
-                    "annual metrics; lower **Minimum days per year** to include them.".format(
-                        res["min_days"], ", ".join(none_ok["site_id"])))
-            dropped = rec_t[(rec_t["years_dropped"].fillna("") != "") & (rec_t["years_used"].fillna("") != "")]
-            if len(dropped):
-                st.info(
-                    "Years with fewer than {} days were left out of the whole-record fit: {}.".format(
-                        res["min_days"], "; ".join("{} ({})".format(r.site_id, r.years_dropped)
-                                                    for r in dropped.itertuples())))
+                    "Days in the fit cover less than {}% of the record for: {}. These sites have "
+                    "no whole-record AmpRatio, phase lag or mean ratio; lower **Whole record: "
+                    "minimum % of record** to include them.".format(
+                        res["min_rec_pct"], ", ".join("{} ({:.0f}%)".format(r.site_id, r.pct_record_fit)
+                                                     for r in low.itertuples())))
+            yl0 = ann["yearly"]
+            if len(yl0):
+                fail = yl0[~yl0["meets_min_consec"]]
+                if len(fail):
+                    st.info(
+                        "Years without {} consecutive days in the fit get no signal metrics: {}.".format(
+                            res["min_consec"], "; ".join(
+                                "{} {} ({} d)".format(r.site_id, r.year, r.longest_consec_days)
+                                for r in fail.itertuples())))
             short_sites = rec_t[(rec_t["record_span_days"] > 0) & (rec_t["record_span_days"] < 300)]
             if len(short_sites):
                 st.warning(
@@ -764,16 +780,19 @@ if ran_annual:
                       "treat these annual metrics with caution.")
         st.markdown("#### Whole record")
         st.dataframe(ann["record"], hide_index=True, width="stretch")
-        st.caption("Fitted only to the years that meet the minimum (years_used); shorter years "
-                   "are dropped first (years_dropped). AmpRatio and mean ratio are water / air; "
+        st.caption("Fitted to every day with stream > 1 °C (n_days_fit). Signal metrics are "
+                   "reported only when those days cover at least {}% of the record span "
+                   "(pct_record_fit = n_days_fit / record_span_days). AmpRatio and mean ratio are water / air; "
+                   .format(res["min_rec_pct"]) +
                    "phase lag is water − air in days. TS__Slope is the daily thermal sensitivity "
                    "(stream ~ air, Kelleher et al. 2012).")
         st.markdown("#### By " + ytype + " year")
         st.dataframe(ann["yearly"], hide_index=True, width="stretch")
-        st.caption("A year needs at least {} days in the fit (n_days_fit: paired daily means with "
-                   "stream > 1 °C). Shorter years (meets_min_days = False) show no AmpRatio, phase "
-                   "lag or mean ratio; their thermal sensitivity is still reported, as in PASTA. "
-                   "count is all paired days, including cold days.".format(res["min_days"]))
+        st.caption("A year needs a run of at least {} consecutive days in the fit "
+                   "(longest_consec_days, counted on paired daily means with stream > 1 °C). "
+                   "Other years (meets_min_consec = False) show no AmpRatio, phase lag or mean "
+                   "ratio; their thermal sensitivity is still reported, as in PASTA. count is all "
+                   "paired days, including cold days.".format(res["min_consec"]))
         _annual_plots()
         yl = ann["yearly"].dropna(subset=["AmpRatio", "PhaseLag_d"]) if len(ann["yearly"]) else ann["yearly"]
         if len(yl):

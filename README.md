@@ -118,12 +118,17 @@ back through the download buttons. **Save to folder** writes to the server, not 
      with `rday = 2π·d/365` (d = day of water year or calendar year), for the whole record and for each year.
      Outputs: AmpRatio, PhaseLag_d, Ratio_Mean, daily thermal sensitivity (stream ~ air slope;
      Kelleher et al. 2012), longest data gap and day count.
-     **Minimum days per year** (default 100) counts `n_days_fit`: the days that actually enter the fit
-     (paired daily means with stream > 1 °C). A shorter year gets no AmpRatio, phase lag or mean ratio in the
-     yearly table (`meets_min_days = False`; its thermal sensitivity is still reported, as in PASTA), and it
-     is **dropped before the whole-record fit**. The record table lists `years_used` and `years_dropped`.
-     A site with no qualifying year gets no whole-record metrics. A warning appears when the record used
-     spans less than ~300 days.
+     Two sliders set how much data is needed. Both count only *fit days*: paired daily means left after the
+     1 °C drop (stream > 1 °C), the days that actually enter the fit.
+     - **Single year: minimum consecutive days** (default 100, `min_consec_days=`): a year is reported only if
+       its longest run of consecutive fit days (`longest_consec_days`) reaches this. Other years get no
+       AmpRatio, phase lag or mean ratio (`meets_min_consec = False`); their thermal sensitivity is still
+       reported, as in PASTA.
+     - **Whole record: minimum % of record** (default 75 %, `min_record_pct=`): the whole-record fit uses every
+       fit day, and is reported only if `pct_record_fit = 100 · n_days_fit / record_span_days` reaches this,
+       where `record_span_days` runs from the first to the last paired day (cold days included). Otherwise
+       the record gets no AmpRatio, phase lag or mean ratio (`meets_record_pct = False`).
+     A warning appears when the record spans less than ~300 days.
    - **Diel**: the same sinusoid with `rday = 2π·h/24`, fitted to every day for air and stream. Days where
      both fits pass the adjusted R² threshold give AmpRatio, PhaseLag_h and mean ratios (°C and K), with
      7-day centred rolling means.
@@ -170,10 +175,10 @@ Annual signal:
 - **Thermal-sensitivity columns** are named `TS__Slope`, `TS_AdjRsqr` and `TS_YInt` (R: `TS__Slope`,
   `AdjRsqr`, `YInt`) so they are not confused with the sinusoid fit's R² and intercept.
 - Daily means are computed from the paired sub-daily records, so air and stream means cover the same times.
-- **Minimum days per year**: R (`TMy_output`) blanks a year's signal metrics when `count` < 100, where
-  `count` includes the cold days that are then left out of the fit, and it fits the whole record to every
-  year. The app counts only the days in the fit (`n_days_fit`), and it drops short years before the
-  whole-record fit.
+- **Minimum data**: R (`TMy_output`) blanks a year's signal metrics when `count` < 100 days in total, where
+  `count` includes the cold days that are then left out of the fit, and it has no rule for the whole record.
+  The app asks each year for a run of consecutive fit days, and the whole record for fit days on a minimum
+  share of its span (see step 5 above).
 
 Diel:
 
