@@ -7,8 +7,7 @@
 annual_metrics(
   daily,
   yr_type = "water",
-  max_gap_days = 50,
-  max_missing_pct = 75,
+  min_year_pct = 75,
   min_record_pct = 75,
   phase_method = DEFAULT_PHASE_METHOD
 )
@@ -18,7 +17,7 @@ annual_metrics(
 
 \item{yr_type}{`"water"` or `"calendar"`.}
 
-\item{max_gap_days, max_missing_pct, min_record_pct}{The rules above.}
+\item{min_year_pct, min_record_pct}{The rules above (default 75 each).}
 
 \item{phase_method}{`"atan2"` or `"atan"`, see [PHASE_METHODS].}
 }
@@ -26,15 +25,14 @@ annual_metrics(
 list(record, yearly, fits).
 }
 \description{
-All rules are applied after the 1 \enc{°}{deg}C drop: a no-data day is a day of the year
-(365/366) without a paired daily mean with stream > 1 \enc{°}{deg}C (no records, too little
-of the day logged, or stream mean <= 1 \enc{°}{deg}C).
-* yearly: a year is dropped when it has more than `max_gap_days` consecutive
-  no-data days (`longest_gap_days`; default 50), or its no-data days are more than
-  `max_missing_pct` % of the year (`pct_missing`; default 75). Dropped years
-  (`meets_year_criteria = FALSE`) get no AmpRatio, PhaseLag_d or Ratio_Mean;
-  thermal sensitivity is still reported.
-* record: fit days must cover at least `min_record_pct` % of the record span
-  (first to last paired day): `pct_record_fit = 100 * n_days_fit / record_span_days`.
-  Otherwise the signal metrics are NA (`meets_record_pct = FALSE`).
+Both rules are applied after the 1 \enc{°}{deg}C drop and count fit days: paired daily means
+with stream > 1 \enc{°}{deg}C.
+* yearly: `pct_year_fit = 100 * n_days_fit / n_days_in_year`, out of the full water
+  (or calendar) year, 365 or 366 days. Below `min_year_pct` the year is dropped
+  (`meets_year_pct = FALSE`): no AmpRatio, PhaseLag_d or Ratio_Mean; thermal
+  sensitivity is still reported. A partial first or last year counts the days
+  outside the record as missing.
+* record: `pct_record_fit = 100 * n_days_fit / record_span_days`, the span from the
+  first to the last paired day (cold days included). Below
+  `min_record_pct` the signal metrics are NA (`meets_record_pct = FALSE`).
 }

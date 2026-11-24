@@ -27,7 +27,7 @@ site has paired data) or c(start, end) dates, inclusive.}
 \item{interval_min}{Logging interval in minutes.}
 
 \item{...}{Settings for [run_annual()] / [run_diel()]: water_min_C, min_coverage,
-phase_method, yr_type, max_gap_days, max_missing_pct, min_record_pct, r2_min, roll_k.}
+phase_method, yr_type, min_year_pct, min_record_pct, r2_min, roll_k.}
 }
 \value{
 A `pasta_result` with pairs, coverage (per site, in the range) and date_range.

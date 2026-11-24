@@ -99,13 +99,11 @@ run_diel <- function(data, interval_min = NULL, water_min_C = 0.99, min_coverage
 #' @param data data.frame, first four columns site_id, date/time, stream, air.
 #'   Sub-daily records are averaged to daily means; daily means are used as they are.
 #' @param yr_type `"water"` (1 Oct - 30 Sep, named by the year it ends) or `"calendar"`.
-#' @param max_gap_days A year with more than this many consecutive no-data days is
-#'   dropped (no AmpRatio, PhaseLag_d, Ratio_Mean). Default 50. Counted after the
-#'   1 \enc{°}{deg}C drop: a no-data day has no daily mean with stream > 1 \enc{°}{deg}C.
-#' @param max_missing_pct A year whose no-data days are more than this % of the year
-#'   (365/366) is also dropped. Default 75.
+#' @param min_year_pct A year needs fit days (daily means with stream > 1 \enc{°}{deg}C, after
+#'   the 1 \enc{°}{deg}C drop) on at least this % of the full water or calendar year, 365/366
+#'   days (default 75). Other years get no AmpRatio, PhaseLag_d, Ratio_Mean.
 #' @param min_record_pct The whole record needs fit days on at least this % of the
-#'   record span (first to last paired day). All fit days are used.
+#'   record span, first to last paired day (default 75).
 #' @param water_min_C Sub-daily stream records at or below this are dropped before
 #'   averaging. Days with a stream mean <= 1 \enc{°}{deg}C are always dropped (as in PASTA).
 #' @param min_coverage Share of a full day of paired records needed for a daily mean.
@@ -114,8 +112,7 @@ run_diel <- function(data, interval_min = NULL, water_min_C = 0.99, min_coverage
 #'   lag wrapped into (-182.5, 182.5] d) or `"atan"` (the PASTA R formula).
 #' @return A `pasta_annual` list: daily, record, yearly, fits, settings.
 #' @export
-run_annual <- function(data, yr_type = "water", max_gap_days = 50, max_missing_pct = 75,
-                       min_record_pct = 75,
+run_annual <- function(data, yr_type = "water", min_year_pct = 75, min_record_pct = 75,
                        water_min_C = 0.99, min_coverage = 0.75, interval_min = NULL,
                        phase_method = DEFAULT_PHASE_METHOD) {
   if (!yr_type %in% c("water", "calendar")) stop("yr_type must be 'water' or 'calendar'", call. = FALSE)
@@ -129,10 +126,9 @@ run_annual <- function(data, yr_type = "water", max_gap_days = 50, max_missing_p
     daily <- daily_means(to_paired(d, interval_min, water_min_C), min_coverage, interval_min)
   }
   check_phase_method(phase_method)
-  res <- annual_metrics(daily, yr_type, as.integer(max_gap_days), as.numeric(max_missing_pct),
-                        as.numeric(min_record_pct), phase_method)
-  settings <- list(yr_type = yr_type, max_gap_days = max_gap_days,
-                   max_missing_pct = max_missing_pct,
+  res <- annual_metrics(daily, yr_type, as.numeric(min_year_pct), as.numeric(min_record_pct),
+                        phase_method)
+  settings <- list(yr_type = yr_type, min_year_pct = min_year_pct,
                    min_record_pct = min_record_pct, water_min_C = water_min_C,
                    min_coverage = min_coverage, interval_min = interval_min,
                    phase_method = phase_method)
@@ -231,8 +227,7 @@ run_summary <- function(res, data = NULL, pairs = NULL, date_range = NULL) {
       rec <- res$annual$record
       r <- if (nrow(rec)) rec[rec$site_id == sid, , drop = FALSE] else rec
       row$year_type <- s$yr_type
-      row$max_gap_days_per_year <- s$max_gap_days
-      row$max_missing_pct_per_year <- s$max_missing_pct
+      row$min_year_pct <- s$min_year_pct
       row$min_record_pct <- s$min_record_pct
       row$annual_n_days <- if (nrow(r)) as.integer(r$n_days_fit[1]) else 0L
       for (c in c("AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "TS_AdjRsqr",
@@ -281,7 +276,7 @@ pair_table <- function(pairs) {
 #'   site has paired data) or c(start, end) dates, inclusive.
 #' @param interval_min Logging interval in minutes.
 #' @param ... Settings for [run_annual()] / [run_diel()]: water_min_C, min_coverage,
-#'   phase_method, yr_type, max_gap_days, max_missing_pct, min_record_pct, r2_min, roll_k.
+#'   phase_method, yr_type, min_year_pct, min_record_pct, r2_min, roll_k.
 #' @return A `pasta_result` with pairs, coverage (per site, in the range) and date_range.
 #' @export
 run_loggers <- function(loggers, pairs = NULL, analyses = ANALYSES, date_range = "all",

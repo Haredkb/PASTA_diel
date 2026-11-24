@@ -2,7 +2,7 @@
 % Please edit documentation in R/annual.R
 \name{days_in_year}
 \alias{days_in_year}
-\title{Days in a water year (1 Oct of year-1 to 30 Sep) or calendar year}
+\title{Days in a water year (1 Oct of year-1 to 30 Sep) or calendar year: 365 or 366}
 \usage{
 days_in_year(year, yr_type = "water")
 }
@@ -12,5 +12,5 @@ days_in_year(year, yr_type = "water")
 \item{yr_type}{`"water"` or `"calendar"`.}
 }
 \description{
-Days in a water year (1 Oct of year-1 to 30 Sep) or calendar year
+Days in a water year (1 Oct of year-1 to 30 Sep) or calendar year: 365 or 366
 }

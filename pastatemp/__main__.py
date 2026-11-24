@@ -41,12 +41,9 @@ def main(argv=None):
                     help="drop stream records at or below this, °C (default 0.99)")
     ap.add_argument("--min-coverage", type=float, default=75,
                     help="minimum %% of a full day of records (default 75)")
-    ap.add_argument("--max-gap-days", type=int, default=50,
-                    help="annual, single year: drop a year whose longest run of missing days "
-                         "(no stream > 1 °C daily mean) is longer than this (default 50)")
-    ap.add_argument("--max-missing-pct", type=float, default=75,
-                    help="annual, single year: drop a year missing more than this %% of its "
-                         "days (default 75)")
+    ap.add_argument("--min-year-pct", type=float, default=75,
+                    help="annual, single year: %% of the full water/calendar year (365/366 "
+                         "days) with stream > 1 °C days needed (default 75)")
     ap.add_argument("--min-record-pct", type=float, default=75,
                     help="annual, whole record: %% of the record span with stream > 1 °C days "
                          "needed (default 75)")
@@ -59,8 +56,7 @@ def main(argv=None):
     res = run_folder(a.folder, analyses=(a.only,) if a.only else ANALYSES, pairs=a.pair,
                      interval_min=a.interval, date_range=a.date_range, yr_type=a.year_type,
                      phase_method=a.phase_method, water_min_C=a.water_min,
-                     min_coverage=a.min_coverage / 100, max_gap_days=a.max_gap_days,
-                     max_missing_pct=a.max_missing_pct,
+                     min_coverage=a.min_coverage / 100, min_year_pct=a.min_year_pct,
                      min_record_pct=a.min_record_pct, r2_min=a.r2_min, roll_k=a.roll_k)
     out = a.out or str(Path(a.folder) / "PASTA_output")
     prefix = res.default_prefix()

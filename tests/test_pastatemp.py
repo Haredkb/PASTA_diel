@@ -69,52 +69,49 @@ def test_diel_rejects_daily_means(data):
         ps.run_diel(d)
 
 
-def test_short_years_get_no_signal_metrics(data):
-    short = data[data["time"] < "2024-12-31"]      # 91 days
-    res = ps.run_annual(short)                     # WY2025: no data from 31 Dec to 30 Sep
+def test_partial_year_judged_against_full_year(data):
+    short = data[data["time"] < "2024-12-31"]      # 91 days, all with data
+    res = ps.run_annual(short)
     y = res.yearly.iloc[0]
-    assert y["n_days_in_year"] == 365 and y["missing_days"] == 274
-    assert y["longest_gap_days"] == 274
-    assert np.isnan(y["AmpRatio"]) and not y["meets_year_criteria"]
-    # the whole record is judged by % of record, not by the yearly rule
+    assert y["n_days_in_year"] == 365 and y["pct_year_fit"] == 24.9   # 91 / 365
+    assert not y["meets_year_pct"] and np.isnan(y["AmpRatio"])
+    # the whole record is judged on its own span
     rec = res.record.iloc[0]
     assert rec["meets_record_pct"] and rec["pct_record_fit"] == 100.0
 
 
-def _wy2025(gap_days=0, cold_days=0, keep_every=1):
-    """WY2025 (365 days): one run of `gap_days` days removed (from day 200), `cold_days`
-    days with stream <= 1 °C just before it, and optionally only every n-th day kept."""
+def test_leap_water_year_has_366_days():
+    from pastatemp.annual import days_in_year
+    assert days_in_year(2024, "water") == 366 and days_in_year(2025, "water") == 365
+    assert days_in_year(2024, "calendar") == 366
+
+
+def _wy2025(gap_days=0, cold_days=0):
+    """WY2025, 1 Oct - 30 Sep (365 days): `gap_days` days removed from day 200,
+    and `cold_days` days with stream <= 1 °C just before them."""
     days = pd.date_range("2024-10-01", "2025-09-30", freq="D")
     rd = 2 * np.pi * np.arange(len(days)) / 365
     w = 10 + 4 * np.sin(rd)
     w[200 - cold_days:200] = 0.5
     df = pd.DataFrame({"s": "X", "date": days, "w": w, "a": 10 + 8 * np.sin(rd)})
-    df = df.drop(index=range(200, 200 + gap_days))
-    return df[df.index % keep_every == 0]
+    return df.drop(index=range(200, 200 + gap_days))
 
 
-def test_year_dropped_when_no_data_gap_longer_than_max():
-    y = ps.run_annual(_wy2025(50)).yearly.iloc[0]            # default max_gap_days = 50
-    assert y["longest_gap_days"] == 50 and y["meets_year_criteria"] and np.isfinite(y["AmpRatio"])
-    y = ps.run_annual(_wy2025(51)).yearly.iloc[0]
-    assert y["longest_gap_days"] == 51 and not y["meets_year_criteria"] and np.isnan(y["AmpRatio"])
+def test_year_needs_min_pct_of_the_year():
+    y = ps.run_annual(_wy2025(91)).yearly.iloc[0]            # 274 / 365 = 75.1 %; default 75 %
+    assert y["n_days_in_year"] == 365 and y["n_days_fit"] == 274 and y["pct_year_fit"] == 75.1
+    assert y["meets_year_pct"] and np.isfinite(y["AmpRatio"])
+    y = ps.run_annual(_wy2025(92)).yearly.iloc[0]            # 273 / 365 = 74.8 %
+    assert not y["meets_year_pct"] and np.isnan(y["AmpRatio"])
     assert np.isfinite(y["TS__Slope"])                       # thermal sensitivity still reported
-    assert ps.run_annual(_wy2025(51), max_gap_days=60).yearly.iloc[0]["meets_year_criteria"]
+    assert ps.run_annual(_wy2025(92), min_year_pct=70).yearly.iloc[0]["meets_year_pct"]
 
 
-def test_year_dropped_when_total_no_data_over_pct():
-    # every 4th day kept: gaps of only 3 days, but 273 of 365 days (74.8 %) have no data
-    y = ps.run_annual(_wy2025(keep_every=4)).yearly.iloc[0]  # default max_missing_pct = 75
-    assert y["longest_gap_days"] == 3 and y["pct_missing"] == 74.8 and y["meets_year_criteria"]
-    y = ps.run_annual(_wy2025(keep_every=4), max_missing_pct=70).yearly.iloc[0]
-    assert not y["meets_year_criteria"] and np.isnan(y["AmpRatio"])
-
-
-def test_cold_days_count_as_no_data():
-    # 30 days with stream <= 1 °C right before 30 days with no records = a 60-day gap
-    y = ps.run_annual(_wy2025(30, cold_days=30)).yearly.iloc[0]
-    assert y["count"] == 335 and y["n_days_fit"] == 305 and y["longest_gap_days"] == 60
-    assert not y["meets_year_criteria"]
+def test_year_pct_counts_after_1C_drop():
+    # 50 days with no records + 50 days with stream <= 1 °C: 265 / 365 = 72.6 %
+    y = ps.run_annual(_wy2025(50, cold_days=50)).yearly.iloc[0]
+    assert y["count"] == 315 and y["n_days_fit"] == 265 and y["pct_year_fit"] == 72.6
+    assert not y["meets_year_pct"]
 
 
 def test_record_pct_counts_days_after_1C_drop():
@@ -124,13 +121,13 @@ def test_record_pct_counts_days_after_1C_drop():
     wat = np.r_[np.full(80, 0.5), 8 + 5 * np.sin(rd)]
     air = np.r_[np.full(80, -5.0), 10 + 10 * np.sin(rd)]
     df = pd.DataFrame({"s": "X", "date": days, "w": wat, "a": air})
-    res = ps.run_annual(df, max_gap_days=365, max_missing_pct=100)   # record: default 75 %
+    res = ps.run_annual(df, min_year_pct=30)                # record: default 75 %
     rec = res.record.iloc[0]
     assert rec["count"] == 200 and rec["n_days_fit"] == 120 and rec["record_span_days"] == 200
     assert rec["pct_record_fit"] == 60.0 and not rec["meets_record_pct"]
     assert np.isnan(rec["AmpRatio"]) and np.isfinite(rec["TS__Slope"])
     y = res.yearly.iloc[0]
-    assert y["meets_year_criteria"]                        # the year itself passes
+    assert y["pct_year_fit"] == 32.9 and y["meets_year_pct"]   # 120 / 365 of the year
     rec = ps.run_annual(df, min_record_pct=60).record.iloc[0]
     assert rec["meets_record_pct"] and np.isfinite(rec["AmpRatio"])
     f = res.fits
@@ -281,7 +278,7 @@ def test_run_loggers_common_period_and_outputs(tmp_path):
     assert s.loc["site_001", "date_from"] == "2025-01-01"
     assert s.loc["site_001", "stream_logger"] == "ST_001" and s.loc["site_001", "air_logger"] == "AT_001"
     assert {"annual_AmpRatio", "annual_pct_record_fit", "diel_median_AmpRatio",
-            "max_gap_days_per_year", "max_missing_pct_per_year"} <= set(res.summary.columns)
+            "min_year_pct"} <= set(res.summary.columns)
     assert list(res.tables()) == ["run_summary", "pairs", "coverage", "paired_df", "annual_metrics",
                                   "annual_metrics_yearly", "annual_fits", "daily_means",
                                   "diel_metrics", "diel_fits"]

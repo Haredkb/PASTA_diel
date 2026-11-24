@@ -180,77 +180,65 @@ fit_days <- function(daily) {
 
 .signal_cols <- c("AmpRatio", "PhaseLag_d", "Ratio_Mean")
 
-year_bounds <- function(year, yr_type = "water") {
-  y <- as.integer(year)
-  if (yr_type == "water") {
-    list(start = as.Date(paste0(y - 1, "-10-01")), end = as.Date(paste0(y, "-09-30")))
-  } else {
-    list(start = as.Date(paste0(y, "-01-01")), end = as.Date(paste0(y, "-12-31")))
-  }
-}
-
-#' Days in a water year (1 Oct of year-1 to 30 Sep) or calendar year
+#' Days in a water year (1 Oct of year-1 to 30 Sep) or calendar year: 365 or 366
 #' @param year Year(s), named by the year they end.
 #' @param yr_type `"water"` or `"calendar"`.
 #' @export
 days_in_year <- function(year, yr_type = "water") {
-  b <- year_bounds(year, yr_type)
-  as.integer(b$end - b$start) + 1L
+  y <- as.integer(year)
+  if (yr_type == "water") {
+    as.integer(as.Date(paste0(y, "-10-01")) - as.Date(paste0(y - 1, "-10-01")))
+  } else {
+    as.integer(as.Date(paste0(y + 1, "-01-01")) - as.Date(paste0(y, "-01-01")))
+  }
 }
 
-#' Longest run of consecutive no-data days in a year
+#' Fit days as a share of a record span
 #'
-#' Days of the year without a date in `dates`; days before the first or after the
-#' last date of the year count too.
-#' @param dates Dates with data.
-#' @param year Year, named by the year it ends.
-#' @param yr_type `"water"` or `"calendar"`.
+#' @param all_dates All paired days (cold days included) of the record or year.
+#' @param fit_dates Days with a stream daily mean > 1 \enc{°}{deg}C (after the 1 \enc{°}{deg}C drop).
+#' @return list(n_days_fit, span_days, pct_fit), span = first to last paired day.
 #' @export
-longest_gap <- function(dates, year, yr_type = "water") {
-  b <- year_bounds(year, yr_type)
-  have <- rep(FALSE, as.integer(b$end - b$start) + 1L)
-  i <- as.integer(as.Date(dates) - b$start) + 1L
-  have[i[i >= 1 & i <= length(have)]] <- TRUE
-  r <- rle(have)
-  if (any(!r$values)) as.integer(max(r$lengths[!r$values])) else 0L
+span_coverage <- function(all_dates, fit_dates) {
+  if (!length(all_dates)) return(list(n_days_fit = 0L, span_days = 0L, pct_fit = 0))
+  span <- as.integer(as.numeric(max(all_dates) - min(all_dates)) + 1)
+  n <- length(fit_dates)
+  list(n_days_fit = n, span_days = span, pct_fit = 100 * n / span)
 }
 
 #' Annual metrics for the whole record and each year, with the data rules
 #'
-#' All rules are applied after the 1 \enc{°}{deg}C drop: a no-data day is a day of the year
-#' (365/366) without a paired daily mean with stream > 1 \enc{°}{deg}C (no records, too little
-#' of the day logged, or stream mean <= 1 \enc{°}{deg}C).
-#' * yearly: a year is dropped when it has more than `max_gap_days` consecutive
-#'   no-data days (`longest_gap_days`; default 50), or its no-data days are more than
-#'   `max_missing_pct` % of the year (`pct_missing`; default 75). Dropped years
-#'   (`meets_year_criteria = FALSE`) get no AmpRatio, PhaseLag_d or Ratio_Mean;
-#'   thermal sensitivity is still reported.
-#' * record: fit days must cover at least `min_record_pct` % of the record span
-#'   (first to last paired day): `pct_record_fit = 100 * n_days_fit / record_span_days`.
-#'   Otherwise the signal metrics are NA (`meets_record_pct = FALSE`).
+#' Both rules are applied after the 1 \enc{°}{deg}C drop and count fit days: paired daily means
+#' with stream > 1 \enc{°}{deg}C.
+#' * yearly: `pct_year_fit = 100 * n_days_fit / n_days_in_year`, out of the full water
+#'   (or calendar) year, 365 or 366 days. Below `min_year_pct` the year is dropped
+#'   (`meets_year_pct = FALSE`): no AmpRatio, PhaseLag_d or Ratio_Mean; thermal
+#'   sensitivity is still reported. A partial first or last year counts the days
+#'   outside the record as missing.
+#' * record: `pct_record_fit = 100 * n_days_fit / record_span_days`, the span from the
+#'   first to the last paired day (cold days included). Below
+#'   `min_record_pct` the signal metrics are NA (`meets_record_pct = FALSE`).
 #' @param daily Daily means.
-#' @param max_gap_days,max_missing_pct,min_record_pct The rules above.
+#' @param min_year_pct,min_record_pct The rules above (default 75 each).
 #' @inheritParams fit_TAS
 #' @return list(record, yearly, fits).
 #' @export
-annual_metrics <- function(daily, yr_type = "water", max_gap_days = 50, max_missing_pct = 75,
-                           min_record_pct = 75, phase_method = DEFAULT_PHASE_METHOD) {
+annual_metrics <- function(daily, yr_type = "water", min_year_pct = 75, min_record_pct = 75,
+                           phase_method = DEFAULT_PHASE_METHOD) {
   if (!nrow(daily)) return(list(record = data.frame(), yearly = data.frame(), fits = data.frame()))
   d <- daily
   d$date <- as.Date(d$date)
   d$year <- if (yr_type == "water") water_year(d$date) else as.integer(format(d$date, "%Y"))
   fd <- fit_days(d)
-  fkey <- paste(fd$site_id, fd$year, sep = "\r")
-  fit_dates <- split(fd$date, fkey)
+  all_by <- split(d$date, paste(d$site_id, d$year, sep = "\r"))
+  fit_by <- split(fd$date, paste(fd$site_id, fd$year, sep = "\r"))
   year_check <- function(sid, yr) {
     k <- paste(sid, yr, sep = "\r")
-    dts <- if (k %in% names(fit_dates)) fit_dates[[k]] else as.Date(character(0))
-    n <- length(dts)
+    n <- if (k %in% names(fit_by)) length(fit_by[[k]]) else 0L
     tot <- days_in_year(yr, yr_type)
-    gap <- longest_gap(dts, yr, yr_type)
-    pct <- round(100 * (tot - n) / tot, 1)
-    list(n_days_fit = n, n_days_in_year = tot, missing_days = tot - n, pct_missing = pct,
-         longest_gap_days = gap, meets_year_criteria = gap <= max_gap_days && pct <= max_missing_pct)
+    pct <- 100 * n / tot
+    list(n_days_fit = n, n_days_in_year = tot, pct_year_fit = round(pct, 1),
+         meets_year_pct = pct >= min_year_pct)
   }
 
   # per year: fit every year, report signal metrics only for years that qualify
@@ -273,26 +261,23 @@ annual_metrics <- function(daily, yr_type = "water", max_gap_days = 50, max_miss
       as.data.frame(year_check(yearly$site_id[i], yearly$year[i]))
     }))
     yearly <- cbind(yearly, chk)
-    yearly[!yearly$meets_year_criteria, .signal_cols] <- NA_real_
+    yearly[!yearly$meets_year_pct, .signal_cols] <- NA_real_
     yearly$year_type <- yr_type
     yearly <- yearly[corder(yearly$site_id, yearly$year), , drop = FALSE]
     rownames(yearly) <- NULL
   }
-  ok_years <- names(fit_dates)[vapply(names(fit_dates), function(k) {
+  ok_years <- names(all_by)[vapply(names(all_by), function(k) {
     p <- strsplit(k, "\r", fixed = TRUE)[[1]]
-    year_check(p[1], as.integer(p[2]))$meets_year_criteria
+    year_check(p[1], as.integer(p[2]))$meets_year_pct
   }, logical(1))]
 
   # whole record: all fit days; signal metrics only if they cover enough of the span
   ta <- therm_analysis(d, yr_type, phase_method)
   rec <- merge(ta$metrics, data_gap_check(d), by = "site_id", all.x = TRUE, sort = FALSE)
   rows <- lapply(unique(d$site_id), function(sid) {
-    x <- d[d$site_id == sid, , drop = FALSE]
-    span <- as.integer(as.numeric(max(x$date) - min(x$date)) + 1)
-    f <- fd[fd$site_id == sid, , drop = FALSE]
-    pct <- if (span) 100 * nrow(f) / span else 0
-    df(site_id = sid, n_days_fit = nrow(f), record_span_days = span, pct_record_fit = round(pct, 1),
-       meets_record_pct = pct >= min_record_pct)
+    sc <- span_coverage(d$date[d$site_id == sid], fd$date[fd$site_id == sid])
+    df(site_id = sid, n_days_fit = sc$n_days_fit, record_span_days = sc$span_days,
+       pct_record_fit = round(sc$pct_fit, 1), meets_record_pct = sc$pct_fit >= min_record_pct)
   })
   base <- rbind_all(rows)
   rec <- merge(base, rec, by = "site_id", all.x = TRUE, sort = FALSE)

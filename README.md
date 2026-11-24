@@ -50,7 +50,7 @@ pairs = [("HF-003", "HF-003", "HF_103"), ("HF_005", "HF_005", "HF_101")]
 cov = pt.coverage(loggers, pairs)
 pt.coverage_in_range(cov, *pt.date_range(cov, "common"))   # does the range cover all sites?
 res = pt.run_loggers(loggers, pairs, date_range="common",
-                     max_gap_days=50, max_missing_pct=75, min_record_pct=75,
+                     min_year_pct=75, min_record_pct=75,
                      phase_method="atan2")
 res.summary                                         # the app's run summary
 res.to_zip("PASTA_results.zip")                     # the app's "Download all"
@@ -60,7 +60,7 @@ plots.plot_annual_fit(res.annual, "HF-003").show()
 ```
 
 Settings (all optional, same defaults as the app): `water_min_C=0.99`, `min_coverage=0.75`,
-`phase_method="atan2"`, `yr_type="water"`, `max_gap_days=50`, `max_missing_pct=75`, `min_record_pct=75`, `r2_min=0.7`,
+`phase_method="atan2"`, `yr_type="water"`, `min_year_pct=75`, `min_record_pct=75`, `r2_min=0.7`,
 `roll_k=7`, `analyses=("annual", "diel")`.
 
 The analysis functions also take a DataFrame directly, whose **first four columns** are, in order,
@@ -77,7 +77,7 @@ Command line (`pastatemp` after installing, or `python -m pastatemp`):
 ```
 pastatemp "path/to/logger_csvs" --out "path/to/output" --zip
 pastatemp FOLDER --date-range common --only annual --year-type calendar
-pastatemp FOLDER --date-range 2024-10-01:2025-09-30 --max-gap-days 30 --min-record-pct 80
+pastatemp FOLDER --date-range 2024-10-01:2025-09-30 --min-year-pct 80 --min-record-pct 80
 pastatemp FOLDER --phase-method atan       # reproduce the R phase formulas
 pastatemp FOLDER --pair HF-003 HF-003 HF_103 --pair HF_005 HF_005 HF_101
 ```
@@ -102,7 +102,7 @@ zip_pasta(res, "PASTA_results.zip")
 
 loggers <- read_loggers("path/to/logger_csvs")
 pairs <- list(c("HF-003", "HF-003", "HF_103"), c("HF_005", "HF_005", "HF_101"))
-res <- run_loggers(loggers, pairs, max_gap_days = 50, min_record_pct = 75)
+res <- run_loggers(loggers, pairs, min_year_pct = 75, min_record_pct = 75)
 plot_annual_fit(res$annual, "HF-003")
 ```
 
@@ -168,18 +168,13 @@ back through the download buttons. **Save to folder** writes to the server, not 
      with `rday = 2π·d/365` (d = day of water year or calendar year), for the whole record and for each year.
      Outputs: AmpRatio, PhaseLag_d, Ratio_Mean, daily thermal sensitivity (stream ~ air slope;
      Kelleher et al. 2012), longest data gap and day count.
-     Three sliders set how much data is needed. All are applied after the 1 °C drop: a *no-data day* is a
-     day with no paired daily mean above 1 °C (no records, too little of the day logged, or a stream mean
-     ≤ 1 °C).
-     - **Single year: maximum consecutive days with no data** (default 50, `max_gap_days=`): a year with
-       a longer run of no-data days (`longest_gap_days`) is dropped. Days of the water or calendar year
-       before the record starts or after it ends count as no data, so a partial first or last year is
-       dropped when that stretch is longer than the limit.
-     - **Single year: maximum total days with no data** (default 75 % of the year, `max_missing_pct=`): a
-       year whose no-data days (`missing_days`, `pct_missing` of 365/366) add up to more than this is also
-       dropped.
-     - A dropped year (`meets_year_criteria = False`) gets no AmpRatio, phase lag or mean ratio; its
-       thermal sensitivity is still reported, as in PASTA.
+     Two sliders set how much data is needed. Both are applied after the 1 °C drop and count *fit days*:
+     paired daily means with stream > 1 °C.
+     - **Single year: minimum % of the year** (default 75 %, `min_year_pct=`):
+       `pct_year_fit = 100 · n_days_fit / n_days_in_year`, out of the full water (or calendar) year,
+       365 or 366 days. Days before the record starts or after it ends count as missing, so a short
+       partial year is dropped. A year below the limit is dropped (`meets_year_pct = False`): no
+       AmpRatio, phase lag or mean ratio; its thermal sensitivity is still reported, as in PASTA.
      - **Whole record: minimum % of record** (default 75 %, `min_record_pct=`): the whole-record fit uses every
        fit day, and is reported only if `pct_record_fit = 100 · n_days_fit / record_span_days` reaches this,
        where `record_span_days` runs from the first to the last paired day (cold days included). Otherwise
@@ -233,9 +228,8 @@ Annual signal:
 - Daily means are computed from the paired sub-daily records, so air and stream means cover the same times.
 - **Which years count**: R (`TMy_output`) blanks a year's signal metrics when it has fewer than 100 days,
   counting the cold days that are then left out of the fit, and has no rule for the whole record. The app
-  instead drops a year with more than `max_gap_days` consecutive no-data days or more than
-  `max_missing_pct` % no-data days, and asks the whole record for fit days on a set share of its span
-  (see step 5 above).
+  asks each year for fit days on a set share of the full year (`min_year_pct`) and the whole record for
+  fit days on a set share of its span (`min_record_pct`; see step 5 above).
 
 Diel:
 

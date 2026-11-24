@@ -26,51 +26,46 @@ test_that("run_annual accepts daily means; run_diel refuses them", {
   expect_error(run_diel(dd), "sub-daily")
 })
 
-test_that("short years get no signal metrics; record judged by % of record", {
-  short <- dat[dat$time < as.POSIXct("2024-12-31", tz = "UTC"), ]
-  res <- run_annual(short)                       # WY2025: no data from 31 Dec to 30 Sep
+test_that("a partial year is judged against the full year", {
+  short <- dat[dat$time < as.POSIXct("2024-12-31", tz = "UTC"), ]   # 91 days, all with data
+  res <- run_annual(short)
   y <- res$yearly[1, ]
-  expect_equal(c(y$n_days_in_year, y$missing_days, y$longest_gap_days), c(365L, 274L, 274L))
+  expect_equal(c(y$n_days_in_year, y$pct_year_fit), c(365, 24.9))   # 91 / 365
+  expect_false(y$meets_year_pct)
   expect_true(is.na(y$AmpRatio))
-  expect_false(y$meets_year_criteria)
   expect_true(res$record$meets_record_pct[1])
   expect_equal(res$record$pct_record_fit[1], 100)
 })
 
-wy2025 <- function(gap_days = 0, cold_days = 0, keep_every = 1) {
+test_that("leap water years have 366 days", {
+  expect_equal(days_in_year(c(2024, 2025), "water"), c(366L, 365L))
+  expect_equal(days_in_year(2024, "calendar"), 366L)
+})
+
+wy2025 <- function(gap_days = 0, cold_days = 0) {
   days <- seq(as.Date("2024-10-01"), as.Date("2025-09-30"), by = 1)
   rd <- 2 * pi * (seq_along(days) - 1) / 365
   w <- 10 + 4 * sin(rd)
   if (cold_days) w[(201 - cold_days):200] <- 0.5
   d <- data.frame(s = "X", date = days, w = w, a = 10 + 8 * sin(rd))
-  d <- d[(seq_len(nrow(d)) - 1) %% keep_every == 0, ]
-  if (gap_days) d <- d[!(as.numeric(d$date - days[1]) %in% 200:(199 + gap_days)), ]
+  if (gap_days) d <- d[-(201:(200 + gap_days)), ]
   d
 }
 
-test_that("a year with a no-data gap longer than max_gap_days is dropped", {
-  y <- run_annual(wy2025(50))$yearly[1, ]                    # default 50
-  expect_equal(y$longest_gap_days, 50L)
-  expect_true(y$meets_year_criteria && is.finite(y$AmpRatio))
-  y <- run_annual(wy2025(51))$yearly[1, ]
-  expect_equal(y$longest_gap_days, 51L)
-  expect_false(y$meets_year_criteria)
+test_that("a year needs a minimum % of the year", {
+  y <- run_annual(wy2025(91))$yearly[1, ]                    # 274 / 365 = 75.1 %
+  expect_equal(c(y$n_days_in_year, y$n_days_fit, y$pct_year_fit), c(365, 274, 75.1))
+  expect_true(y$meets_year_pct && is.finite(y$AmpRatio))
+  y <- run_annual(wy2025(92))$yearly[1, ]                    # 273 / 365 = 74.8 %
+  expect_false(y$meets_year_pct)
   expect_true(is.na(y$AmpRatio) && is.finite(y$TS__Slope))
-  expect_true(run_annual(wy2025(51), max_gap_days = 60)$yearly$meets_year_criteria[1])
+  expect_true(run_annual(wy2025(92), min_year_pct = 70)$yearly$meets_year_pct[1])
 })
 
-test_that("a year with too many no-data days in total is dropped", {
-  y <- run_annual(wy2025(keep_every = 4))$yearly[1, ]        # default 75 %
-  expect_equal(c(y$longest_gap_days, y$pct_missing), c(3, 74.8))
-  expect_true(y$meets_year_criteria)
-  y <- run_annual(wy2025(keep_every = 4), max_missing_pct = 70)$yearly[1, ]
-  expect_false(y$meets_year_criteria)
-})
-
-test_that("cold days count as no data", {
-  y <- run_annual(wy2025(30, cold_days = 30))$yearly[1, ]
-  expect_equal(c(y$count, y$n_days_fit, y$longest_gap_days), c(335, 305, 60))
-  expect_false(y$meets_year_criteria)
+test_that("year % counts days after the 1 C drop", {
+  y <- run_annual(wy2025(50, cold_days = 50))$yearly[1, ]    # 265 / 365 = 72.6 %
+  expect_equal(c(y$count, y$n_days_fit, y$pct_year_fit), c(315, 265, 72.6))
+  expect_false(y$meets_year_pct)
 })
 
 test_that("record % counts days after the 1 C drop", {
@@ -78,13 +73,13 @@ test_that("record % counts days after the 1 C drop", {
   rd <- 2 * pi * (0:119) / 365
   d <- data.frame(s = "X", date = days, w = c(rep(0.5, 80), 8 + 5 * sin(rd)),
                   a = c(rep(-5, 80), 10 + 10 * sin(rd)))
-  res <- run_annual(d, max_gap_days = 365, max_missing_pct = 100)
+  res <- run_annual(d, min_year_pct = 30)                    # year: 120 / 365 = 32.9 %
   rec <- res$record[1, ]
   expect_equal(c(rec$count, rec$n_days_fit, rec$record_span_days), c(200, 120, 200))
   expect_equal(rec$pct_record_fit, 60)
   expect_false(rec$meets_record_pct)
   expect_true(is.na(rec$AmpRatio) && is.finite(rec$TS__Slope))
-  expect_true(res$yearly$meets_year_criteria[1])
+  expect_true(res$yearly$meets_year_pct[1])
   expect_true(run_annual(d, min_record_pct = 60)$record$meets_record_pct[1])
   expect_false(any(res$fits$meets_criteria[res$fits$year == "all"]))
 })
@@ -183,7 +178,7 @@ test_that("run_loggers: common period, summary and outputs", {
   expect_equal(s$date_from[s$site_id == "site_001"], "2025-01-01")
   expect_equal(s$stream_logger[s$site_id == "site_001"], "ST_001")
   expect_true(all(c("annual_AmpRatio", "annual_pct_record_fit", "diel_median_AmpRatio",
-                    "max_gap_days_per_year", "max_missing_pct_per_year") %in% names(s)))
+                    "min_year_pct") %in% names(s)))
   expect_equal(names(pasta_tables(res)),
                c("run_summary", "pairs", "coverage", "paired_df", "annual_metrics",
                  "annual_metrics_yearly", "annual_fits", "daily_means", "diel_metrics", "diel_fits"))

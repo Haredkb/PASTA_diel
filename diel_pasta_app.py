@@ -476,19 +476,13 @@ with st.expander("Settings", expanded=True):
         yr_type = st.radio("Year type", ["water", "calendar"], horizontal=True,
                            disabled=not do_annual,
                            help="Water year runs 1 Oct – 30 Sep and is named by the year it ends.")
-        max_gap = st.slider(
-            "Single year: maximum consecutive days with no data", 0, 365, 50, 1,
+        min_year_pct = st.slider(
+            "Single year: minimum % of the year", 0, 100, 75, 5,
             disabled=not do_annual,
-            help="A year with more consecutive no-data days than this is dropped (no "
-                 "AmpRatio, phase lag or mean ratio). Default 50. Counted after the 1 °C drop: "
-                 "a no-data day has no daily mean with stream > 1 °C (no records, too little of "
-                 "the day logged, or stream ≤ 1 °C). Days before the record starts or after it "
-                 "ends in that year count as no data.")
-        max_missing_pct = st.slider(
-            "Single year: maximum total days with no data (% of year)", 0, 100, 75, 5,
-            disabled=not do_annual,
-            help="A year whose no-data days (after the 1 °C drop) add up to more than this "
-                 "share of the year (365/366 days) is also dropped. Default 75%.")
+            help="A year is fitted only if daily means with stream > 1 °C (after the 1 °C "
+                 "drop) cover at least this share of the full water or calendar year "
+                 "(365/366 days). Days before the record starts or after it ends count as "
+                 "missing. Other years are dropped: no AmpRatio, phase lag or mean ratio.")
         min_rec_pct = st.slider(
             "Whole record: minimum % of record", 0, 100, 75, 5,
             disabled=not do_annual,
@@ -509,7 +503,7 @@ with st.expander("Settings", expanded=True):
 
 run_sig = _sig(score_sig, tuple(pair_list), tuple(analyses), water_min, min_cov, yr_type,
                phase_method,
-               max_gap, max_missing_pct, min_rec_pct, r2_min, roll_k, str(dr0), str(dr1))
+               min_year_pct, min_rec_pct, r2_min, roll_k, str(dr0), str(dr1))
 
 
 if st.button("Run PASTA", type="primary"):
@@ -520,13 +514,12 @@ if st.button("Run PASTA", type="primary"):
                 grids, sel_pairs.reset_index(drop=True), analyses=pkg_analyses,
                 date_range=(dr0, dr1 - pd.Timedelta(days=1)), interval_min=int(interval_min),
                 water_min_C=water_min, min_coverage=min_cov / 100, phase_method=phase_method,
-                yr_type=yr_type, max_gap_days=int(max_gap), max_missing_pct=float(max_missing_pct),
+                yr_type=yr_type, min_year_pct=float(min_year_pct),
                 min_record_pct=float(min_rec_pct),
                 r2_min=r2_min, roll_k=int(roll_k))
             res = {"result": result, "T_y": result.paired, "summary": result.summary,
                    "analyses": list(analyses), "yr_type": yr_type,
-                   "max_gap": int(max_gap), "max_missing_pct": int(max_missing_pct),
-                   "min_rec_pct": int(min_rec_pct),
+                   "min_year_pct": int(min_year_pct), "min_rec_pct": int(min_rec_pct),
                    "sig": run_sig, "run_ts": result.run_ts}
             if result.diel is not None:
                 res.update(fits=result.diel.fits, metrics=result.diel.metrics)
@@ -602,14 +595,15 @@ if ran_annual:
                                                      for r in low.itertuples())))
             yl0 = ann["yearly"]
             if len(yl0):
-                fail = yl0[~yl0["meets_year_criteria"]]
+                fail = yl0[~yl0["meets_year_pct"]]
                 if len(fail):
                     st.info(
-                        "Years with more than {} consecutive no-data days, or more than {}% "
-                        "no-data days, were dropped (no signal metrics): {}.".format(
-                            res["max_gap"], res["max_missing_pct"], "; ".join(
-                                "{} {} ({} consecutive no-data days, {:.0f}% no data)".format(
-                                    r.site_id, r.year, r.longest_gap_days, r.pct_missing)
+                        "Years with fit days on less than {}% of the year were dropped (no "
+                        "signal metrics): {}.".format(
+                            res["min_year_pct"], "; ".join(
+                                "{} {} ({} of {} d, {:.0f}%)".format(
+                                    r.site_id, r.year, r.n_days_fit, r.n_days_in_year,
+                                    r.pct_year_fit)
                                 for r in fail.itertuples())))
             short_sites = rec_t[(rec_t["record_span_days"] > 0) & (rec_t["record_span_days"] < 300)]
             if len(short_sites):
@@ -629,12 +623,11 @@ if ran_annual:
                    "(stream ~ air, Kelleher et al. 2012).")
         st.markdown("#### By " + res["yr_type"] + " year")
         st.dataframe(ann["yearly"], hide_index=True, width="stretch")
-        st.caption("A no-data day has no daily mean with stream > 1 °C. A year is dropped "
-                   "(meets_year_criteria = False) when longest_gap_days (consecutive no-data days) "
-                   "> {} or pct_missing > {}%: "
-                   "no AmpRatio, phase lag or mean ratio; its thermal sensitivity is still "
-                   "reported, as in PASTA. count is all paired days, including cold days."
-                   .format(res["max_gap"], res["max_missing_pct"]))
+        st.caption("pct_year_fit = n_days_fit / n_days_in_year: days with stream > 1 °C as a "
+                   "share of the full year (365/366 days). A year below {}% is dropped "
+                   "(meets_year_pct = False): no AmpRatio, phase lag or mean ratio; its thermal "
+                   "sensitivity is still reported, as in PASTA. count is all paired days, "
+                   "including cold days.".format(res["min_year_pct"]))
         _annual_plots()
         yl = ann["yearly"].dropna(subset=["AmpRatio", "PhaseLag_d"]) if len(ann["yearly"]) else ann["yearly"]
         if len(yl):

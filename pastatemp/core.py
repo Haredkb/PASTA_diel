@@ -234,7 +234,7 @@ def run_diel(data, interval_min=None, water_min_C=0.99, min_coverage=0.75,
     return DielResult(paired, fits, metrics, pd.DataFrame(rows), settings)
 
 
-def run_annual(data, yr_type="water", max_gap_days=50, max_missing_pct=75, min_record_pct=75,
+def run_annual(data, yr_type="water", min_year_pct=75, min_record_pct=75,
                water_min_C=0.99, min_coverage=0.75, interval_min=None,
                phase_method=DEFAULT_PHASE_METHOD):
     """
@@ -246,16 +246,13 @@ def run_annual(data, yr_type="water", max_gap_days=50, max_missing_pct=75, min_r
                    Sub-daily records are averaged to daily means first; daily means are
                    used as they are.
     yr_type:       'water' (1 Oct – 30 Sep, named by the year it ends) or 'calendar'.
-    max_gap_days, max_missing_pct:
-                   a year is dropped (no AmpRatio / PhaseLag_d / Ratio_Mean in `yearly`)
-                   when its longest run of consecutive missing days is more than
-                   max_gap_days (default 50), or its missing days are more than
-                   max_missing_pct % of the year (default 75). A missing day has no fit
-                   day: no data, too little of the day logged, or a stream mean <= 1 °C
-                   (i.e. counted after the 1 °C drop).
+    min_year_pct:  a year needs fit days (daily means with stream > 1 °C, i.e. after
+                   the 1 °C drop) on at least this % of the full water (or calendar)
+                   year, 365/366 days (default 75). Other years get no AmpRatio /
+                   PhaseLag_d / Ratio_Mean in `yearly`.
     min_record_pct: the whole record needs fit days on at least this % of the record
-                   span (first to last paired day). Otherwise `record` gets no
-                   AmpRatio / PhaseLag_d / Ratio_Mean. All fit days are used.
+                   span, first to last paired day (default 75).
+                   Otherwise `record` gets no AmpRatio / PhaseLag_d / Ratio_Mean.
     water_min_C:   sub-daily stream records at or below this are dropped before averaging.
                    Days with a stream mean ≤ 1 °C are always dropped (as in PASTA).
     min_coverage:  share of a full day of paired records needed for a daily mean.
@@ -278,13 +275,11 @@ def run_annual(data, yr_type="water", max_gap_days=50, max_missing_pct=75, min_r
         paired = _to_paired(d, interval_min, water_min_C)
         daily = _annual.daily_means(paired, min_coverage=min_coverage, interval_min=interval_min)
     check_method(phase_method)
-    res = _annual.annual_metrics(daily, yr_type=yr_type, max_gap_days=int(max_gap_days),
-                                 max_missing_pct=float(max_missing_pct),
+    res = _annual.annual_metrics(daily, yr_type=yr_type, min_year_pct=float(min_year_pct),
                                  min_record_pct=float(min_record_pct),
                                  phase_method=phase_method)
     rec = res["record"]
-    settings = {"yr_type": yr_type, "max_gap_days": max_gap_days,
-                "max_missing_pct": max_missing_pct,
+    settings = {"yr_type": yr_type, "min_year_pct": min_year_pct,
                 "min_record_pct": min_record_pct, "water_min_C": water_min_C,
                 "min_coverage": min_coverage, "interval_min": interval_min,
                 "phase_method": phase_method}
@@ -374,8 +369,7 @@ def run_summary(res, data=None, pairs=None, date_range=None):
             rec = res.annual.record
             r = rec[rec["site_id"] == sid] if len(rec) else rec
             row.update({"year_type": s.get("yr_type"),
-                        "max_gap_days_per_year": s.get("max_gap_days"),
-                        "max_missing_pct_per_year": s.get("max_missing_pct"),
+                        "min_year_pct": s.get("min_year_pct"),
                         "min_record_pct": s.get("min_record_pct"),
                         "annual_n_days": int(r["n_days_fit"].iloc[0]) if len(r) else 0})
             for c in ["AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "TS_AdjRsqr",
@@ -417,8 +411,7 @@ def run_loggers(loggers, pairs=None, analyses=ANALYSES, date_range="all", interv
     date_range: 'all' (each site's full record), 'common' (only dates every site
                 has paired data) or (start, end) dates, inclusive.
     kwargs:     settings for run_annual() / run_diel() (water_min_C, min_coverage,
-                phase_method, yr_type, max_gap_days, max_missing_pct, min_record_pct,
-                r2_min, roll_k).
+                phase_method, yr_type, min_year_pct, min_record_pct, r2_min, roll_k).
 
     Returns PastaResult with pairs, coverage (per site in the range) and date_range set.
     """

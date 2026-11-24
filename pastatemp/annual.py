@@ -164,54 +164,43 @@ def _fit_days(daily):
 SIGNAL_COLS = ["AmpRatio", "PhaseLag_d", "Ratio_Mean"]
 
 
-def year_bounds(year, yr_type="water"):
-    """(first day, last day) of a water year (1 Oct of year-1 to 30 Sep) or calendar year."""
+def days_in_year(year, yr_type="water"):
+    """Days in a water year (1 Oct of year-1 to 30 Sep) or calendar year: 365 or 366."""
     y = int(year)
     if yr_type == "water":
-        return pd.Timestamp(y - 1, 10, 1), pd.Timestamp(y, 9, 30)
-    return pd.Timestamp(y, 1, 1), pd.Timestamp(y, 12, 31)
+        return (pd.Timestamp(y, 10, 1) - pd.Timestamp(y - 1, 10, 1)).days
+    return (pd.Timestamp(y + 1, 1, 1) - pd.Timestamp(y, 1, 1)).days
 
 
-def days_in_year(year, yr_type="water"):
-    """365 or 366."""
-    a, b = year_bounds(year, yr_type)
-    return (b - a).days + 1
+def span_coverage(all_dates, fit_dates):
+    """(n_days_fit, span_days, pct_fit): fit days as a % of the span from the first
+    to the last paired day (cold days included in the span)."""
+    if len(all_dates) == 0:
+        return 0, 0, 0.0
+    span = int((all_dates.max() - all_dates.min()).days + 1)
+    n = int(len(fit_dates))
+    return n, span, 100.0 * n / span
 
 
-def longest_gap(dates, year, yr_type="water"):
-    """Longest run of consecutive days in the year with no date in `dates`
-    (days before the first or after the last date of the year count too)."""
-    a, b = year_bounds(year, yr_type)
-    have = np.zeros((b - a).days + 1, dtype=bool)
-    idx = (pd.to_datetime(pd.Series(dates)).dt.normalize() - a).dt.days.to_numpy()
-    have[idx[(idx >= 0) & (idx < len(have))]] = True
-    best = run = 0
-    for h in have:
-        run = 0 if h else run + 1
-        best = max(best, run)
-    return int(best)
-
-
-def annual_metrics(daily, yr_type="water", max_gap_days=50, max_missing_pct=75,
-                   min_record_pct=75, phase_method=_ph.DEFAULT_PHASE_METHOD):
+def annual_metrics(daily, yr_type="water", min_year_pct=75, min_record_pct=75,
+                   phase_method=_ph.DEFAULT_PHASE_METHOD):
     """
     Returns dict of DataFrames:
       'record' : whole-record metrics + gap check per site (PASTA metric_table)
       'yearly' : per water/calendar year (TMy_output)
       'fits'   : annual sinusoid coefficients (year 'all' = whole record, and per year)
 
-    All rules are applied after the 1 °C drop: a "no data" day is a day of the year
-    (365/366) without a paired daily mean with stream > 1 °C (no records, too little
-    of the day logged, or stream mean <= 1 °C).
-      yearly : a year is dropped when it has more than `max_gap_days` consecutive
-               no-data days (longest_gap_days; default 50), OR its no-data days are
-               more than `max_missing_pct` % of the year (pct_missing). Dropped years
-               (meets_year_criteria = False) get no AmpRatio / PhaseLag_d / Ratio_Mean;
-               their thermal sensitivity is still reported, as in PASTA.
-      record : fit days must cover at least `min_record_pct` % of the record span
-               (first to last paired day, cold days included): pct_record_fit =
-               100 * n_days_fit / record_span_days. Otherwise the signal metrics are NA
-               (meets_record_pct = False). All fit days are used; no year is dropped.
+    Both rules are applied after the 1 °C drop and count fit days: paired daily means
+    with stream > 1 °C.
+      yearly : pct_year_fit = 100 * n_days_fit / n_days_in_year, out of the full water
+               (or calendar) year, 365 or 366 days. Below `min_year_pct` the year is
+               dropped (meets_year_pct = False): no AmpRatio / PhaseLag_d / Ratio_Mean;
+               its thermal sensitivity is still reported, as in PASTA. A partial
+               first or last year counts the days outside the record as missing.
+      record : pct_record_fit = 100 * n_days_fit / record_span_days, the span from the
+               first to the last paired day (cold days included). Below
+               `min_record_pct` the signal metrics are NA (meets_record_pct = False).
+               All fit days are used; no year is dropped.
     'count' (all paired days, as in the R data_gap_check) is reported alongside.
     """
     if daily.empty:
@@ -222,16 +211,15 @@ def annual_metrics(daily, yr_type="water", max_gap_days=50, max_missing_pct=75,
     d["date"] = pd.to_datetime(d["date"])
     d["year"] = water_year(d["date"]) if yr_type == "water" else d["date"].dt.year
     fd = _fit_days(d)
+    all_by = {k: g["date"] for k, g in d.groupby(["site_id", "year"])}
     n_fit = fd.groupby(["site_id", "year"]).size()
-    fit_dates = {k: g["date"] for k, g in fd.groupby(["site_id", "year"])}
 
     def _year_check(sid, yr):
-        """(n_days_fit, n_days_in_year, missing_days, pct_missing, longest_gap_days, ok)"""
+        """(n_days_fit, n_days_in_year, pct_year_fit, meets_year_pct)"""
         n = int(n_fit.get((sid, yr), 0))
         tot = days_in_year(yr, yr_type)
-        gap = longest_gap(fit_dates.get((sid, yr), []), yr, yr_type)
-        pct = round(100.0 * (tot - n) / tot, 1)
-        return n, tot, tot - n, pct, gap, bool(gap <= max_gap_days and pct <= max_missing_pct)
+        pct = 100.0 * n / tot
+        return n, tot, round(pct, 1), bool(pct >= min_year_pct)
 
     # ---- per year: fit every year, report signal metrics only for years that qualify
     yr_rows, yr_fits = [], []
@@ -245,23 +233,21 @@ def annual_metrics(daily, yr_type="water", max_gap_days=50, max_missing_pct=75,
     yearly = pd.concat(yr_rows, ignore_index=True) if yr_rows else pd.DataFrame()
     if not yearly.empty:
         chk = pd.DataFrame([_year_check(s, y) for s, y in zip(yearly["site_id"], yearly["year"])],
-                           columns=["n_days_fit", "n_days_in_year", "missing_days", "pct_missing",
-                                    "longest_gap_days", "meets_year_criteria"])
+                           columns=["n_days_fit", "n_days_in_year", "pct_year_fit",
+                                    "meets_year_pct"])
         yearly = pd.concat([yearly, chk], axis=1)
-        yearly.loc[~yearly["meets_year_criteria"], SIGNAL_COLS] = np.nan
+        yearly.loc[~yearly["meets_year_pct"], SIGNAL_COLS] = np.nan
         yearly["year_type"] = yr_type
         yearly = yearly.sort_values(["site_id", "year"]).reset_index(drop=True)
-    ok_years = {k for k in n_fit.index if _year_check(*k)[-1]}
+    ok_years = {k for k in all_by if _year_check(*k)[-1]}
 
     # ---- whole record: all fit days; signal metrics only if they cover enough of the span
     rec, rec_fits = therm_analysis(d, yr_type, phase_method)
     rec = rec.merge(data_gap_check(d), on="site_id", how="left")
     rows = []
     for sid, x in d.groupby("site_id", sort=False):
-        span = int((x["date"].max() - x["date"].min()).days + 1)
-        f = fd[fd["site_id"] == sid]
-        pct = 100.0 * len(f) / span if span else 0.0
-        rows.append({"site_id": sid, "n_days_fit": int(len(f)),
+        n, span, pct = span_coverage(x["date"], fd.loc[fd["site_id"] == sid, "date"])
+        rows.append({"site_id": sid, "n_days_fit": n,
                      "record_span_days": span, "pct_record_fit": round(pct, 1),
                      "meets_record_pct": bool(pct >= min_record_pct)})
     rec = pd.DataFrame(rows).merge(rec, on="site_id", how="left")
