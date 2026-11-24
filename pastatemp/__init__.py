@@ -45,7 +45,7 @@ from .pairing import classify_loggers, pair_loggers
 from .phase import DEFAULT_PHASE_METHOD, PHASE_METHODS
 from .readers import parse_logger_csv, read_logger, read_loggers
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "run_folder", "run_loggers", "run_pasta", "run_annual", "run_diel", "run_summary",

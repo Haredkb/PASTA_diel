@@ -1,7 +1,7 @@
 Package: pastatemp
 Type: Package
 Title: Paired Air and Stream Temperature Analysis (PASTA) at Annual and Diel Scales
-Version: 0.2.0
+Version: 0.3.0
 Authors@R: person("Danielle", "Hare", role = c("aut", "cre", "cph"),
     email = "maintainer@example.org")
 Description: Reads air and stream temperature logger files, sorts loggers into

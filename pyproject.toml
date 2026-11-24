@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pastatemp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Paired Air and Stream Temperature Analysis (PASTA) at the annual and diel scales"
 readme = "README.md"
 license = "MIT"
