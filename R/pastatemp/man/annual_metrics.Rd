@@ -7,7 +7,7 @@
 annual_metrics(
   daily,
   yr_type = "water",
-  min_year_pct = 75,
+  min_year_pct = 25,
   min_record_pct = 75,
   phase_method = DEFAULT_PHASE_METHOD
 )
@@ -17,7 +17,7 @@ annual_metrics(
 
 \item{yr_type}{`"water"` or `"calendar"`.}
 
-\item{min_year_pct, min_record_pct}{The rules above (default 75 each).}
+\item{min_year_pct, min_record_pct}{The rules above (default 25 and 75).}
 
 \item{phase_method}{`"atan2"` or `"atan"`, see [PHASE_METHODS].}
 }

@@ -35,7 +35,7 @@ zip_pasta(res, "PASTA_results.zip")
 
 loggers <- read_loggers("path/to/logger_csvs")
 pairs <- list(c("HF-003", "HF-003", "HF_103"), c("HF_005", "HF_005", "HF_101"))
-res <- run_loggers(loggers, pairs, date_range = "common", min_year_pct = 75,
+res <- run_loggers(loggers, pairs, date_range = "common", min_year_pct = 25,
                    min_record_pct = 75)
 plot_annual_fit(res$annual, "HF-003")
 }

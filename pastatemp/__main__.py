@@ -41,9 +41,9 @@ def main(argv=None):
                     help="drop stream records at or below this, °C (default 0.99)")
     ap.add_argument("--min-coverage", type=float, default=75,
                     help="minimum %% of a full day of records (default 75)")
-    ap.add_argument("--min-year-pct", type=float, default=75,
+    ap.add_argument("--min-year-pct", type=float, default=25,
                     help="annual, single year: %% of the full water/calendar year (365/366 "
-                         "days) with stream > 1 °C days needed (default 75)")
+                         "days) with stream > 1 °C days needed (default 25)")
     ap.add_argument("--min-record-pct", type=float, default=75,
                     help="annual, whole record: %% of the record span with stream > 1 °C days "
                          "needed (default 75)")

@@ -234,7 +234,7 @@ def run_diel(data, interval_min=None, water_min_C=0.99, min_coverage=0.75,
     return DielResult(paired, fits, metrics, pd.DataFrame(rows), settings)
 
 
-def run_annual(data, yr_type="water", min_year_pct=75, min_record_pct=75,
+def run_annual(data, yr_type="water", min_year_pct=25, min_record_pct=75,
                water_min_C=0.99, min_coverage=0.75, interval_min=None,
                phase_method=DEFAULT_PHASE_METHOD):
     """
@@ -248,7 +248,7 @@ def run_annual(data, yr_type="water", min_year_pct=75, min_record_pct=75,
     yr_type:       'water' (1 Oct – 30 Sep, named by the year it ends) or 'calendar'.
     min_year_pct:  a year needs fit days (daily means with stream > 1 °C, i.e. after
                    the 1 °C drop) on at least this % of the full water (or calendar)
-                   year, 365/366 days (default 75). Other years get no AmpRatio /
+                   year, 365/366 days (default 25). Other years get no AmpRatio /
                    PhaseLag_d / Ratio_Mean in `yearly`.
     min_record_pct: the whole record needs fit days on at least this % of the record
                    span, first to last paired day (default 75).

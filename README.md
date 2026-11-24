@@ -50,7 +50,7 @@ pairs = [("HF-003", "HF-003", "HF_103"), ("HF_005", "HF_005", "HF_101")]
 cov = pt.coverage(loggers, pairs)
 pt.coverage_in_range(cov, *pt.date_range(cov, "common"))   # does the range cover all sites?
 res = pt.run_loggers(loggers, pairs, date_range="common",
-                     min_year_pct=75, min_record_pct=75,
+                     min_year_pct=25, min_record_pct=75,
                      phase_method="atan2")
 res.summary                                         # the app's run summary
 res.to_zip("PASTA_results.zip")                     # the app's "Download all"
@@ -60,7 +60,7 @@ plots.plot_annual_fit(res.annual, "HF-003").show()
 ```
 
 Settings (all optional, same defaults as the app): `water_min_C=0.99`, `min_coverage=0.75`,
-`phase_method="atan2"`, `yr_type="water"`, `min_year_pct=75`, `min_record_pct=75`, `r2_min=0.7`,
+`phase_method="atan2"`, `yr_type="water"`, `min_year_pct=25`, `min_record_pct=75`, `r2_min=0.7`,
 `roll_k=7`, `analyses=("annual", "diel")`.
 
 The analysis functions also take a DataFrame directly, whose **first four columns** are, in order,
@@ -102,7 +102,7 @@ zip_pasta(res, "PASTA_results.zip")
 
 loggers <- read_loggers("path/to/logger_csvs")
 pairs <- list(c("HF-003", "HF-003", "HF_103"), c("HF_005", "HF_005", "HF_101"))
-res <- run_loggers(loggers, pairs, min_year_pct = 75, min_record_pct = 75)
+res <- run_loggers(loggers, pairs, min_year_pct = 25, min_record_pct = 75)
 plot_annual_fit(res$annual, "HF-003")
 ```
 
@@ -170,11 +170,12 @@ back through the download buttons. **Save to folder** writes to the server, not 
      Kelleher et al. 2012), longest data gap and day count.
      Two sliders set how much data is needed. Both are applied after the 1 °C drop and count *fit days*:
      paired daily means with stream > 1 °C.
-     - **Single year: minimum % of the year** (default 75 %, `min_year_pct=`):
+     - **Single year: minimum % of the year** (default 25 %, `min_year_pct=`):
        `pct_year_fit = 100 · n_days_fit / n_days_in_year`, out of the full water (or calendar) year,
        365 or 366 days. Days before the record starts or after it ends count as missing, so a short
        partial year is dropped. A year below the limit is dropped (`meets_year_pct = False`): no
        AmpRatio, phase lag or mean ratio; its thermal sensitivity is still reported, as in PASTA.
+       When no year of a site passes, the app says so and points to the whole-record results.
      - **Whole record: minimum % of record** (default 75 %, `min_record_pct=`): the whole-record fit uses every
        fit day, and is reported only if `pct_record_fit = 100 · n_days_fit / record_span_days` reaches this,
        where `record_span_days` runs from the first to the last paired day (cold days included). Otherwise

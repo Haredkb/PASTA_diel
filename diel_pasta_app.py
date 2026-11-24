@@ -477,7 +477,7 @@ with st.expander("Settings", expanded=True):
                            disabled=not do_annual,
                            help="Water year runs 1 Oct – 30 Sep and is named by the year it ends.")
         min_year_pct = st.slider(
-            "Single year: minimum % of the year", 0, 100, 75, 5,
+            "Single year: minimum % of the year", 0, 100, 25, 5,
             disabled=not do_annual,
             help="A year is fitted only if daily means with stream > 1 °C (after the 1 °C "
                  "drop) cover at least this share of the full water or calendar year "
@@ -595,7 +595,18 @@ if ran_annual:
                                                      for r in low.itertuples())))
             yl0 = ann["yearly"]
             if len(yl0):
-                fail = yl0[~yl0["meets_year_pct"]]
+                ok_by_site = yl0.groupby("site_id")["meets_year_pct"].any()
+                none_ok = ok_by_site[~ok_by_site].index.tolist()
+                if none_ok:
+                    best = yl0[yl0["site_id"].isin(none_ok)].groupby("site_id")["pct_year_fit"].max()
+                    st.warning(
+                        "No single year reaches {}% of the {} year for: {}. These records are "
+                        "shorter than the year threshold, so there are no by-year AmpRatio, phase "
+                        "lag or mean ratio. Use the **Whole record** results for these sites, or "
+                        "lower **Single year: minimum % of the year**.".format(
+                            res["min_year_pct"], res["yr_type"], ", ".join(
+                                "{} (best year {:.0f}%)".format(s, best[s]) for s in none_ok)))
+                fail = yl0[~yl0["meets_year_pct"] & ~yl0["site_id"].isin(none_ok)]
                 if len(fail):
                     st.info(
                         "Years with fit days on less than {}% of the year were dropped (no "

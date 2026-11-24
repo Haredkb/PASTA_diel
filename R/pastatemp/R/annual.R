@@ -219,11 +219,11 @@ span_coverage <- function(all_dates, fit_dates) {
 #'   first to the last paired day (cold days included). Below
 #'   `min_record_pct` the signal metrics are NA (`meets_record_pct = FALSE`).
 #' @param daily Daily means.
-#' @param min_year_pct,min_record_pct The rules above (default 75 each).
+#' @param min_year_pct,min_record_pct The rules above (default 25 and 75).
 #' @inheritParams fit_TAS
 #' @return list(record, yearly, fits).
 #' @export
-annual_metrics <- function(daily, yr_type = "water", min_year_pct = 75, min_record_pct = 75,
+annual_metrics <- function(daily, yr_type = "water", min_year_pct = 25, min_record_pct = 75,
                            phase_method = DEFAULT_PHASE_METHOD) {
   if (!nrow(daily)) return(list(record = data.frame(), yearly = data.frame(), fits = data.frame()))
   d <- daily

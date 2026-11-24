@@ -98,18 +98,23 @@ def _wy2025(gap_days=0, cold_days=0):
 
 
 def test_year_needs_min_pct_of_the_year():
-    y = ps.run_annual(_wy2025(91)).yearly.iloc[0]            # 274 / 365 = 75.1 %; default 75 %
+    y = ps.run_annual(_wy2025(91), min_year_pct=75).yearly.iloc[0]  # 274 / 365 = 75.1 %
     assert y["n_days_in_year"] == 365 and y["n_days_fit"] == 274 and y["pct_year_fit"] == 75.1
     assert y["meets_year_pct"] and np.isfinite(y["AmpRatio"])
-    y = ps.run_annual(_wy2025(92)).yearly.iloc[0]            # 273 / 365 = 74.8 %
+    y = ps.run_annual(_wy2025(92), min_year_pct=75).yearly.iloc[0]          # 273 / 365 = 74.8 %
     assert not y["meets_year_pct"] and np.isnan(y["AmpRatio"])
     assert np.isfinite(y["TS__Slope"])                       # thermal sensitivity still reported
     assert ps.run_annual(_wy2025(92), min_year_pct=70).yearly.iloc[0]["meets_year_pct"]
 
 
+def test_year_pct_default_is_25():
+    assert ps.run_annual(_wy2025().iloc[:92]).yearly.iloc[0]["meets_year_pct"]      # 25.2 %
+    assert not ps.run_annual(_wy2025().iloc[:91]).yearly.iloc[0]["meets_year_pct"]  # 24.9 %
+
+
 def test_year_pct_counts_after_1C_drop():
     # 50 days with no records + 50 days with stream <= 1 °C: 265 / 365 = 72.6 %
-    y = ps.run_annual(_wy2025(50, cold_days=50)).yearly.iloc[0]
+    y = ps.run_annual(_wy2025(50, cold_days=50), min_year_pct=75).yearly.iloc[0]
     assert y["count"] == 315 and y["n_days_fit"] == 265 and y["pct_year_fit"] == 72.6
     assert not y["meets_year_pct"]
 

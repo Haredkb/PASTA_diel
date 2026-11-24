@@ -101,7 +101,7 @@ run_diel <- function(data, interval_min = NULL, water_min_C = 0.99, min_coverage
 #' @param yr_type `"water"` (1 Oct - 30 Sep, named by the year it ends) or `"calendar"`.
 #' @param min_year_pct A year needs fit days (daily means with stream > 1 \enc{°}{deg}C, after
 #'   the 1 \enc{°}{deg}C drop) on at least this % of the full water or calendar year, 365/366
-#'   days (default 75). Other years get no AmpRatio, PhaseLag_d, Ratio_Mean.
+#'   days (default 25). Other years get no AmpRatio, PhaseLag_d, Ratio_Mean.
 #' @param min_record_pct The whole record needs fit days on at least this % of the
 #'   record span, first to last paired day (default 75).
 #' @param water_min_C Sub-daily stream records at or below this are dropped before
@@ -112,7 +112,7 @@ run_diel <- function(data, interval_min = NULL, water_min_C = 0.99, min_coverage
 #'   lag wrapped into (-182.5, 182.5] d) or `"atan"` (the PASTA R formula).
 #' @return A `pasta_annual` list: daily, record, yearly, fits, settings.
 #' @export
-run_annual <- function(data, yr_type = "water", min_year_pct = 75, min_record_pct = 75,
+run_annual <- function(data, yr_type = "water", min_year_pct = 25, min_record_pct = 75,
                        water_min_C = 0.99, min_coverage = 0.75, interval_min = NULL,
                        phase_method = DEFAULT_PHASE_METHOD) {
   if (!yr_type %in% c("water", "calendar")) stop("yr_type must be 'water' or 'calendar'", call. = FALSE)

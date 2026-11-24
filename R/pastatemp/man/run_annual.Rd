@@ -7,7 +7,7 @@
 run_annual(
   data,
   yr_type = "water",
-  min_year_pct = 75,
+  min_year_pct = 25,
   min_record_pct = 75,
   water_min_C = 0.99,
   min_coverage = 0.75,
@@ -23,7 +23,7 @@ Sub-daily records are averaged to daily means; daily means are used as they are.
 
 \item{min_year_pct}{A year needs fit days (daily means with stream > 1 \enc{°}{deg}C, after
 the 1 \enc{°}{deg}C drop) on at least this % of the full water or calendar year, 365/366
-days (default 75). Other years get no AmpRatio, PhaseLag_d, Ratio_Mean.}
+days (default 25). Other years get no AmpRatio, PhaseLag_d, Ratio_Mean.}
 
 \item{min_record_pct}{The whole record needs fit days on at least this % of the
 record span, first to last paired day (default 75).}

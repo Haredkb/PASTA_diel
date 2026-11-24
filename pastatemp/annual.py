@@ -182,7 +182,7 @@ def span_coverage(all_dates, fit_dates):
     return n, span, 100.0 * n / span
 
 
-def annual_metrics(daily, yr_type="water", min_year_pct=75, min_record_pct=75,
+def annual_metrics(daily, yr_type="water", min_year_pct=25, min_record_pct=75,
                    phase_method=_ph.DEFAULT_PHASE_METHOD):
     """
     Returns dict of DataFrames:

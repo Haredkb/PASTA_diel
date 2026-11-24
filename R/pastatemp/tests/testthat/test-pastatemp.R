@@ -53,17 +53,22 @@ wy2025 <- function(gap_days = 0, cold_days = 0) {
 }
 
 test_that("a year needs a minimum % of the year", {
-  y <- run_annual(wy2025(91))$yearly[1, ]                    # 274 / 365 = 75.1 %
+  y <- run_annual(wy2025(91), min_year_pct = 75)$yearly[1, ]                    # 274 / 365 = 75.1 %
   expect_equal(c(y$n_days_in_year, y$n_days_fit, y$pct_year_fit), c(365, 274, 75.1))
   expect_true(y$meets_year_pct && is.finite(y$AmpRatio))
-  y <- run_annual(wy2025(92))$yearly[1, ]                    # 273 / 365 = 74.8 %
+  y <- run_annual(wy2025(92), min_year_pct = 75)$yearly[1, ]                    # 273 / 365 = 74.8 %
   expect_false(y$meets_year_pct)
   expect_true(is.na(y$AmpRatio) && is.finite(y$TS__Slope))
   expect_true(run_annual(wy2025(92), min_year_pct = 70)$yearly$meets_year_pct[1])
 })
 
+test_that("year % default is 25", {
+  expect_true(run_annual(wy2025()[1:92, ])$yearly$meets_year_pct[1])     # 25.2 %
+  expect_false(run_annual(wy2025()[1:91, ])$yearly$meets_year_pct[1])    # 24.9 %
+})
+
 test_that("year % counts days after the 1 C drop", {
-  y <- run_annual(wy2025(50, cold_days = 50))$yearly[1, ]    # 265 / 365 = 72.6 %
+  y <- run_annual(wy2025(50, cold_days = 50), min_year_pct = 75)$yearly[1, ]    # 265 / 365 = 72.6 %
   expect_equal(c(y$count, y$n_days_fit, y$pct_year_fit), c(315, 265, 72.6))
   expect_false(y$meets_year_pct)
 })
