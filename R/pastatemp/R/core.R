@@ -102,19 +102,25 @@ run_diel <- function(data, interval_min = NULL, water_min_C = 0.99, min_coverage
 #' @param min_year_pct A year needs fit days (daily means with stream > 1 \enc{°}{deg}C, after
 #'   the 1 \enc{°}{deg}C drop) on at least this % of the full water or calendar year, 365/366
 #'   days (default 25). Other years get no AmpRatio, PhaseLag_d, Ratio_Mean.
+#' @param max_gap_days A year is also dropped when its longest run of days without a
+#'   fit day (between fit days) is longer than this (default 50 d, following
+#'   Johnson et al. 2020; see [JOHNSON_2020]).
 #' @param min_record_pct The whole record needs fit days on at least this % of the
-#'   record span, first to last paired day (default 75).
+#'   record span (default 75).
+#' @param record_span_days Optional named numeric of record spans (days) by site;
+#'   [run_loggers()] passes the longer of the stream and air records (`"all"`) or the
+#'   chosen range. Default: first to last paired day.
 #' @param water_min_C Sub-daily stream records at or below this are dropped before
 #'   averaging. Days with a stream mean <= 1 \enc{°}{deg}C are always dropped (as in PASTA).
-#' @param min_coverage Share of a full day of paired records needed for a daily mean.
+#'   Every day with records gets a daily mean (min_coverage is for the diel analysis only).
 #' @param interval_min Logging interval for sub-daily data; inferred when `NULL`.
 #' @param phase_method `"atan2"` (default; phase_d is the day of the fitted peak,
 #'   lag wrapped into (-182.5, 182.5] d) or `"atan"` (the PASTA R formula).
 #' @return A `pasta_annual` list: daily, record, yearly, fits, settings.
 #' @export
-run_annual <- function(data, yr_type = "water", min_year_pct = 25, min_record_pct = 75,
-                       water_min_C = 0.99, min_coverage = 0.75, interval_min = NULL,
-                       phase_method = DEFAULT_PHASE_METHOD) {
+run_annual <- function(data, yr_type = "water", min_year_pct = 25, max_gap_days = 50,
+                       min_record_pct = 75, water_min_C = 0.99, interval_min = NULL,
+                       phase_method = DEFAULT_PHASE_METHOD, record_span_days = NULL) {
   if (!yr_type %in% c("water", "calendar")) stop("yr_type must be 'water' or 'calendar'", call. = FALSE)
   d <- standardize(data)
   if (is_daily(d)) {
@@ -123,15 +129,14 @@ run_annual <- function(data, yr_type = "water", min_year_pct = 25, min_record_pc
     interval_min <- NULL
   } else {
     if (is.null(interval_min)) interval_min <- infer_interval(d)
-    daily <- daily_means(to_paired(d, interval_min, water_min_C), min_coverage, interval_min)
+    daily <- daily_means(to_paired(d, interval_min, water_min_C), 0, interval_min)
   }
   check_phase_method(phase_method)
-  res <- annual_metrics(daily, yr_type, as.numeric(min_year_pct), as.numeric(min_record_pct),
-                        phase_method)
-  settings <- list(yr_type = yr_type, min_year_pct = min_year_pct,
+  res <- annual_metrics(daily, yr_type, as.numeric(min_year_pct), as.numeric(max_gap_days),
+                        as.numeric(min_record_pct), phase_method, record_span_days)
+  settings <- list(yr_type = yr_type, min_year_pct = min_year_pct, max_gap_days = max_gap_days,
                    min_record_pct = min_record_pct, water_min_C = water_min_C,
-                   min_coverage = min_coverage, interval_min = interval_min,
-                   phase_method = phase_method)
+                   interval_min = interval_min, phase_method = phase_method)
   new_result(list(daily = daily, record = res$record, yearly = res$yearly, fits = res$fits,
                   settings = settings), "pasta_annual")
 }
@@ -228,6 +233,7 @@ run_summary <- function(res, data = NULL, pairs = NULL, date_range = NULL) {
       r <- if (nrow(rec)) rec[rec$site_id == sid, , drop = FALSE] else rec
       row$year_type <- s$yr_type
       row$min_year_pct <- s$min_year_pct
+      row$max_gap_days <- s$max_gap_days
       row$min_record_pct <- s$min_record_pct
       row$annual_n_days <- if (nrow(r)) as.integer(r$n_days_fit[1]) else 0L
       for (c in c("AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "TS_AdjRsqr",
@@ -275,8 +281,10 @@ pair_table <- function(pairs) {
 #' @param date_range `"all"` (each site's full record), `"common"` (only dates every
 #'   site has paired data) or c(start, end) dates, inclusive.
 #' @param interval_min Logging interval in minutes.
-#' @param ... Settings for [run_annual()] / [run_diel()]: water_min_C, min_coverage,
-#'   phase_method, yr_type, min_year_pct, min_record_pct, r2_min, roll_k.
+#' @param ... Settings for [run_annual()] / [run_diel()]: water_min_C, min_coverage
+#'   (diel), phase_method, yr_type, min_year_pct, max_gap_days, min_record_pct, r2_min,
+#'   roll_k. The annual record span is the longer of each site's stream and air
+#'   records for `"all"`, else the chosen range.
 #' @return A `pasta_result` with pairs, coverage (per site, in the range) and date_range.
 #' @export
 run_loggers <- function(loggers, pairs = NULL, analyses = ANALYSES, date_range = "all",
@@ -290,10 +298,13 @@ run_loggers <- function(loggers, pairs = NULL, analyses = ANALYSES, date_range =
   }
   cov <- coverage(loggers, pt, interval_min)
   rng <- date_range(cov, date_range)   # R skips the non-function argument of the same name
+  spans <- record_spans(cov, rng[1], rng[2], date_range)
   data <- pair_data(clip_loggers(loggers, rng[1], rng[2]), pt)
-  res <- run_pasta(data, analyses = analyses, interval_min = interval_min, ...)
+  kw <- list(...)
+  if ("annual" %in% tolower(analyses) && is.null(kw$record_span_days)) kw$record_span_days <- spans
+  res <- do.call(run_pasta, c(list(data, analyses = analyses, interval_min = interval_min), kw))
   res$pairs <- pt
-  res$coverage <- coverage_in_range(cov, rng[1], rng[2])
+  res$coverage <- coverage_in_range(cov, rng[1], rng[2], spans)
   res$date_range <- rng
   res$summary <- run_summary(res, data, pairs = pt, date_range = rng)
   res

@@ -15,8 +15,8 @@ from [classify_loggers()].}
 \item{interval_min}{Logging interval in minutes.}
 }
 \value{
-data.frame site_id, stream, air, basis, diel_r, lag_h, overlap_days.
-  'basis' says 'confirm ...' when the data cannot tell the air loggers apart.
+data.frame site_id, stream, air, basis, overlap_days. 'basis' says
+  'confirm' when the pick should be checked; air is `NA` with no name match.
 }
 \description{
 Suggest air-stream pairs

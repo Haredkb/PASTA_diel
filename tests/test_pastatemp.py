@@ -98,13 +98,25 @@ def _wy2025(gap_days=0, cold_days=0):
 
 
 def test_year_needs_min_pct_of_the_year():
-    y = ps.run_annual(_wy2025(91), min_year_pct=75).yearly.iloc[0]  # 274 / 365 = 75.1 %
+    y = ps.run_annual(_wy2025(91), min_year_pct=75, max_gap_days=366).yearly.iloc[0]  # 75.1 %
     assert y["n_days_in_year"] == 365 and y["n_days_fit"] == 274 and y["pct_year_fit"] == 75.1
     assert y["meets_year_pct"] and np.isfinite(y["AmpRatio"])
     y = ps.run_annual(_wy2025(92), min_year_pct=75).yearly.iloc[0]          # 273 / 365 = 74.8 %
     assert not y["meets_year_pct"] and np.isnan(y["AmpRatio"])
     assert np.isfinite(y["TS__Slope"])                       # thermal sensitivity still reported
     assert ps.run_annual(_wy2025(92), min_year_pct=70).yearly.iloc[0]["meets_year_pct"]
+
+
+def test_year_max_gap_default_50():
+    y = ps.run_annual(_wy2025(50)).yearly.iloc[0]            # one 50-day gap: kept
+    assert y["longest_gap_days"] == 50 and y["meets_max_gap"] and y["meets_criteria"]
+    assert np.isfinite(y["AmpRatio"])
+    y = ps.run_annual(_wy2025(51)).yearly.iloc[0]            # 51 days: dropped
+    assert y["longest_gap_days"] == 51 and not y["meets_max_gap"] and y["meets_year_pct"]
+    assert not y["meets_criteria"] and np.isnan(y["AmpRatio"]) and np.isfinite(y["TS__Slope"])
+    assert ps.run_annual(_wy2025(51), max_gap_days=60).yearly.iloc[0]["meets_criteria"]
+    # cold days (stream <= 1 °C) count as missing: 30 cold + 30 missing = 60-day gap
+    assert ps.run_annual(_wy2025(30, cold_days=30)).yearly.iloc[0]["longest_gap_days"] == 60
 
 
 def test_year_pct_default_is_25():
@@ -183,18 +195,14 @@ def test_name_match_levels(stream, air, level):
     assert name_match_level(stream, air) == level
 
 
-def test_names_beat_data():
+def test_pairing_uses_names_only():
     from pastatemp.pairing import suggest_pairs
-    # data prefers the wrong air logger for every stream; names must still win
-    score = {("ST_001", "AT_002"): 0.9, ("ST_001", "AT_001"): 0.5,
-             ("ST_002", "AT_001"): 0.9, ("ST_002", "AT_002"): 0.5}
-    out = suggest_pairs(["ST_001", "ST_002"], ["AT_001", "AT_002"], score)
+    out = suggest_pairs(["ST_001", "ST_002"], ["AT_001", "AT_002"])
     assert out["ST_001"][0] == "AT_001" and out["ST_002"][0] == "AT_002"
     assert out["ST_001"][1].startswith("name")
-    # no name match -> data as last resort
-    out = suggest_pairs(["Brook"], ["AT_001", "AT_002"], {("Brook", "AT_002"): 0.8,
-                                                          ("Brook", "AT_001"): 0.4})
-    assert out["Brook"] == ("AT_002", "data: best diel correlation")
+    # no name match: left for the user, unless there is only one air logger
+    assert suggest_pairs(["Brook"], ["AT_001", "AT_002"])["Brook"][0] is None
+    assert suggest_pairs(["Brook"], ["AT_001"])["Brook"][0] == "AT_001"
 
 
 # ---- phase method -------------------------------------------------------------
@@ -268,6 +276,14 @@ def test_coverage_and_date_range():
     assert (start, end) == (pd.Timestamp("2024-10-01"), pd.Timestamp("2025-10-01"))
     inr = ps.coverage_in_range(cov, start, end)
     assert not ps.all_sites_cover(inr) and inr.set_index("site_id").loc["S2", "status"].startswith("starts")
+    assert "paired_days" not in inr.columns
+    # 'all': range = longer of the stream and air records per site
+    spans = ps.record_spans(cov, start, end, "all")
+    assert spans == {"S1": 365, "S2": 273}
+    inr = ps.coverage_in_range(cov, start, end, spans).set_index("site_id")
+    assert inr.loc["S2", "range_days"] == 273 and inr.loc["S2", "pct_of_range"] == 100
+    # a defined range: its own length
+    assert ps.record_spans(cov, start, end, "common") == {"S1": 365, "S2": 365}
     assert ps.all_sites_cover(ps.coverage_in_range(cov, *ps.date_range(cov, "common")))
     assert ps.date_range(cov, ("2025-02-01", "2025-02-28")) == (pd.Timestamp("2025-02-01"),
                                                                  pd.Timestamp("2025-03-01"))
@@ -293,6 +309,27 @@ def test_run_loggers_common_period_and_outputs(tmp_path):
     assert (tmp_path / "r.zip").exists()
     written = ps.save_tables(res.tables(), '"' + str(tmp_path / "out") + '"', "X")
     assert len(written) == 10
+
+
+def test_record_span_from_longer_logger():
+    lg = _two_site_loggers()
+    lg["AT_002"] = lg["AT_001"]                          # air record is the longer one at S2
+    res = ps.run_loggers(lg, [("S2", "ST_002", "AT_002")], analyses=("annual",), water_min_C=-99)
+    rec = res.record if hasattr(res, "record") else res.annual.record
+    assert rec.iloc[0]["record_span_days"] == 365        # air: Oct 2024 - Sep 2025
+    assert rec.iloc[0]["n_days_fit"] == 273              # paired days from 1 Jan 2025
+    res = ps.run_loggers(lg, [("S2", "ST_002", "AT_002")], analyses=("annual",), water_min_C=-99,
+                         date_range=("2025-01-01", "2025-06-30"))
+    assert res.annual.record.iloc[0]["record_span_days"] == 181
+
+
+def test_annual_daily_means_ignore_day_coverage():
+    # half-day records: annual keeps every day, diel needs min_coverage
+    t, wat, air = _synthetic(end="2025-09-30 23:45")
+    keep = t.hour < 12
+    df = pd.DataFrame({"s": "X", "t": t[keep], "w": wat[keep], "a": air[keep]})
+    assert len(ps.run_annual(df, water_min_C=-99).daily) == 365
+    assert ps.run_diel(df, water_min_C=-99).fits.empty
 
 
 def test_run_pasta_rejects_unknown_setting(data):

@@ -40,10 +40,13 @@ def main(argv=None):
     ap.add_argument("--water-min", type=float, default=0.99,
                     help="drop stream records at or below this, °C (default 0.99)")
     ap.add_argument("--min-coverage", type=float, default=75,
-                    help="minimum %% of a full day of records (default 75)")
+                    help="diel only: minimum %% of a full day of records (default 75)")
     ap.add_argument("--min-year-pct", type=float, default=25,
                     help="annual, single year: %% of the full water/calendar year (365/366 "
                          "days) with stream > 1 °C days needed (default 25)")
+    ap.add_argument("--max-gap-days", type=float, default=50,
+                    help="annual, single year: longest gap between stream > 1 °C days "
+                         "allowed (default 50 d; Johnson et al. 2020)")
     ap.add_argument("--min-record-pct", type=float, default=75,
                     help="annual, whole record: %% of the record span with stream > 1 °C days "
                          "needed (default 75)")
@@ -57,6 +60,7 @@ def main(argv=None):
                      interval_min=a.interval, date_range=a.date_range, yr_type=a.year_type,
                      phase_method=a.phase_method, water_min_C=a.water_min,
                      min_coverage=a.min_coverage / 100, min_year_pct=a.min_year_pct,
+                     max_gap_days=a.max_gap_days,
                      min_record_pct=a.min_record_pct, r2_min=a.r2_min, roll_k=a.roll_k)
     out = a.out or str(Path(a.folder) / "PASTA_output")
     prefix = res.default_prefix()

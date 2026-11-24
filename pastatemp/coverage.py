@@ -69,16 +69,42 @@ def date_range(cov, mode="all"):
     return c0.normalize(), c1.normalize() + pd.Timedelta(days=1)
 
 
-def coverage_in_range(cov, start, end):
+def logger_span_days(cov):
+    """Per site: days from start to end of the longer of the stream and air records."""
+    def _days(a, b):
+        return (b.normalize() - a.normalize()).days + 1 if pd.notna(a) and pd.notna(b) else 0
+    return {r.site_id: max(_days(r.stream_start, r.stream_end), _days(r.air_start, r.air_end))
+            for r in cov.itertuples()}
+
+
+def record_spans(cov, start, end, mode="all"):
     """
-    Per site: paired days inside [start, end), % of the range, and a status
-    ('covers whole range', 'starts …', 'ends …', 'gaps inside range', ...).
+    Record span per site, {site_id: days}, used for '% of range' and for the annual
+    whole-record rule (record_span_days):
+      mode 'all'  - start to end of the longer of the site's stream and air records
+      otherwise   - the chosen date range, end - start
     """
-    out = cov.drop(columns=["paired_index"], errors="ignore").copy()
-    n_days = max((end - start).days, 1)
+    if isinstance(mode, str) and mode == "all":
+        return logger_span_days(cov)
+    n = max((pd.Timestamp(end) - pd.Timestamp(start)).days, 1)
+    return {sid: n for sid in cov["site_id"]}
+
+
+def coverage_in_range(cov, start, end, spans=None):
+    """
+    Per site: paired days inside [start, end) (days_in_range), the site's range in
+    days (range_days: `spans` from record_spans(), else end - start), % of that
+    range, and a status ('covers whole range', 'starts …', 'ends …', 'gaps inside
+    range', ...).
+    """
+    out = cov.drop(columns=["paired_index", "paired_days"], errors="ignore").copy()
+    n_all = max((end - start).days, 1)
+    spans = spans or {}
     tol = pd.Timedelta(days=1)
-    in_range, status = [], []
+    in_range, status, rng = [], [], []
     for r in cov.itertuples():
+        n_days = max(int(spans.get(r.site_id, n_all)), 1)
+        rng.append(n_days)
         idx = r.paired_index
         k = idx[(idx >= start) & (idx < end)]
         days = len(pd.unique(k.normalize())) if len(k) else 0
@@ -96,7 +122,8 @@ def coverage_in_range(cov, start, end):
         else:
             status.append("covers whole range")
     out["days_in_range"] = in_range
-    out["pct_of_range"] = [100 * d / n_days for d in in_range]
+    out["range_days"] = rng
+    out["pct_of_range"] = [100 * d / n for d, n in zip(in_range, rng)]
     out["status"] = status
     return out
 

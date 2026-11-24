@@ -3,11 +3,12 @@
 
 #' Daily means of paired records
 #' @param T_y Paired records (site_id, DateTime_r, str_temp, air_temp).
-#' @param min_coverage Share of a full day of paired records needed for a daily mean.
+#' @param min_coverage Share of a full day of paired records needed for a daily mean
+#'   (default 0: every day with records gets a mean, as in PASTA).
 #' @param interval_min Logging interval in minutes.
 #' @return data.frame site_id, date, tavg_wat_C, tavg_air_C, n_obs.
 #' @export
-daily_means <- function(T_y, min_coverage = 0.75, interval_min = 15) {
+daily_means <- function(T_y, min_coverage = 0, interval_min = 15) {
   if (!nrow(T_y)) {
     return(df(site_id = character(0), date = as.Date(character(0)), tavg_wat_C = numeric(0),
               tavg_air_C = numeric(0), n_obs = integer(0)))
@@ -197,14 +198,38 @@ days_in_year <- function(year, yr_type = "water") {
 #'
 #' @param all_dates All paired days (cold days included) of the record or year.
 #' @param fit_dates Days with a stream daily mean > 1 \enc{°}{deg}C (after the 1 \enc{°}{deg}C drop).
-#' @return list(n_days_fit, span_days, pct_fit), span = first to last paired day.
+#' @param span Record span in days; when `NULL`, the first to the last paired day.
+#'   [run_loggers()] passes the longer of the stream and air records, or the chosen range.
+#' @return list(n_days_fit, span_days, pct_fit).
 #' @export
-span_coverage <- function(all_dates, fit_dates) {
-  if (!length(all_dates)) return(list(n_days_fit = 0L, span_days = 0L, pct_fit = 0))
-  span <- as.integer(as.numeric(max(all_dates) - min(all_dates)) + 1)
+span_coverage <- function(all_dates, fit_dates, span = NULL) {
+  if (is.null(span)) {
+    if (!length(all_dates)) return(list(n_days_fit = 0L, span_days = 0L, pct_fit = 0))
+    span <- as.numeric(max(all_dates) - min(all_dates)) + 1
+  }
+  span <- as.integer(span)
   n <- length(fit_dates)
-  list(n_days_fit = n, span_days = span, pct_fit = 100 * n / span)
+  list(n_days_fit = n, span_days = span, pct_fit = if (span > 0) 100 * n / span else 0)
 }
+
+#' Longest gap between fit days
+#'
+#' Longest run of consecutive days with no fit day between two fit days.
+#' @param fit_dates Days with a stream daily mean > 1 \enc{°}{deg}C.
+#' @return Days (0 = no gap), or `NA` with fewer than two fit days.
+#' @export
+longest_gap <- function(fit_dates) {
+  if (length(fit_dates) < 2) return(NA_real_)
+  max(diff(sort(as.numeric(as.Date(fit_dates))))) - 1
+}
+
+#' Reference for the default maximum yearly gap (50 days)
+#' @export
+JOHNSON_2020 <- paste(
+  "Johnson, Z.C., Johnson, B.G., Briggs, M.A., Devine, W.D., Snyder, C.D., Hitt, N.P.,",
+  "Hare, D.K., Minkova, T.V. (2020). Paired air-water annual temperature patterns reveal",
+  "hydrogeological controls on stream thermal regimes at watershed to continental scales.",
+  "Journal of Hydrology 587, 124929. https://doi.org/10.1016/j.jhydrol.2020.124929")
 
 #' Annual metrics for the whole record and each year, with the data rules
 #'
@@ -214,17 +239,23 @@ span_coverage <- function(all_dates, fit_dates) {
 #'   (or calendar) year, 365 or 366 days. Below `min_year_pct` the year is dropped
 #'   (`meets_year_pct = FALSE`): no AmpRatio, PhaseLag_d or Ratio_Mean; thermal
 #'   sensitivity is still reported. A partial first or last year counts the days
-#'   outside the record as missing.
-#' * record: `pct_record_fit = 100 * n_days_fit / record_span_days`, the span from the
-#'   first to the last paired day (cold days included). Below
-#'   `min_record_pct` the signal metrics are NA (`meets_record_pct = FALSE`).
+#'   outside the record as missing. A year is also dropped when its longest gap
+#'   between fit days (`longest_gap_days`) exceeds `max_gap_days` (default 50 d,
+#'   following Johnson et al. 2020, [JOHNSON_2020]); `meets_criteria` combines both.
+#' * record: `pct_record_fit = 100 * n_days_fit / record_span_days`. The span is
+#'   `record_span_days[[site_id]]` when given ([run_loggers()]: the longer of the
+#'   stream and air records, or the chosen date range), else the first to the last
+#'   paired day (cold days included). Below `min_record_pct` the signal metrics are
+#'   NA (`meets_record_pct = FALSE`).
 #' @param daily Daily means.
-#' @param min_year_pct,min_record_pct The rules above (default 25 and 75).
+#' @param min_year_pct,max_gap_days,min_record_pct The rules above (default 25, 50, 75).
+#' @param record_span_days Optional named numeric/list of record spans (days) by site.
 #' @inheritParams fit_TAS
 #' @return list(record, yearly, fits).
 #' @export
-annual_metrics <- function(daily, yr_type = "water", min_year_pct = 25, min_record_pct = 75,
-                           phase_method = DEFAULT_PHASE_METHOD) {
+annual_metrics <- function(daily, yr_type = "water", min_year_pct = 25, max_gap_days = 50,
+                           min_record_pct = 75, phase_method = DEFAULT_PHASE_METHOD,
+                           record_span_days = NULL) {
   if (!nrow(daily)) return(list(record = data.frame(), yearly = data.frame(), fits = data.frame()))
   d <- daily
   d$date <- as.Date(d$date)
@@ -237,8 +268,12 @@ annual_metrics <- function(daily, yr_type = "water", min_year_pct = 25, min_reco
     n <- if (k %in% names(fit_by)) length(fit_by[[k]]) else 0L
     tot <- days_in_year(yr, yr_type)
     pct <- 100 * n / tot
+    gap <- if (k %in% names(fit_by)) longest_gap(fit_by[[k]]) else NA_real_
+    ok_pct <- pct >= min_year_pct
+    ok_gap <- !is.na(gap) && gap <= max_gap_days
     list(n_days_fit = n, n_days_in_year = tot, pct_year_fit = round(pct, 1),
-         meets_year_pct = pct >= min_year_pct)
+         meets_year_pct = ok_pct, longest_gap_days = gap, meets_max_gap = ok_gap,
+         meets_criteria = ok_pct && ok_gap)
   }
 
   # per year: fit every year, report signal metrics only for years that qualify
@@ -261,21 +296,24 @@ annual_metrics <- function(daily, yr_type = "water", min_year_pct = 25, min_reco
       as.data.frame(year_check(yearly$site_id[i], yearly$year[i]))
     }))
     yearly <- cbind(yearly, chk)
-    yearly[!yearly$meets_year_pct, .signal_cols] <- NA_real_
+    yearly[!yearly$meets_criteria, .signal_cols] <- NA_real_
     yearly$year_type <- yr_type
     yearly <- yearly[corder(yearly$site_id, yearly$year), , drop = FALSE]
     rownames(yearly) <- NULL
   }
   ok_years <- names(all_by)[vapply(names(all_by), function(k) {
     p <- strsplit(k, "\r", fixed = TRUE)[[1]]
-    year_check(p[1], as.integer(p[2]))$meets_year_pct
+    year_check(p[1], as.integer(p[2]))$meets_criteria
   }, logical(1))]
 
   # whole record: all fit days; signal metrics only if they cover enough of the span
   ta <- therm_analysis(d, yr_type, phase_method)
   rec <- merge(ta$metrics, data_gap_check(d), by = "site_id", all.x = TRUE, sort = FALSE)
   rows <- lapply(unique(d$site_id), function(sid) {
-    sc <- span_coverage(d$date[d$site_id == sid], fd$date[fd$site_id == sid])
+    sp <- if (!is.null(record_span_days) && sid %in% names(record_span_days)) {
+      record_span_days[[sid]]
+    } else NULL
+    sc <- span_coverage(d$date[d$site_id == sid], fd$date[fd$site_id == sid], sp)
     df(site_id = sid, n_days_fit = sc$n_days_fit, record_span_days = sc$span_days,
        pct_record_fit = round(sc$pct_fit, 1), meets_record_pct = sc$pct_fit >= min_record_pct)
   })

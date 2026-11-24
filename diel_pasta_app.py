@@ -112,6 +112,23 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# Larger, clearly visible result tabs (Annual signal / Diel)
+st.markdown("""
+<style>
+div[data-testid="stTabs"] button[role="tab"] {
+    padding: 0.6rem 1.6rem; margin-right: 0.4rem; border-radius: 0.5rem 0.5rem 0 0;
+    border: 1px solid rgba(128,128,128,0.35); border-bottom: none;
+    background: rgba(128,128,128,0.08);
+}
+div[data-testid="stTabs"] button[role="tab"] p {
+    font-size: 1.35rem; font-weight: 700;
+}
+div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+    background: rgba(255,75,75,0.12); border-color: rgba(255,75,75,0.6);
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ==============================================================================
 #  Module-level cache helpers
 # ==============================================================================
@@ -130,17 +147,6 @@ def _load_logger(file_bytes, fname, interval_min):
 def _read_folder(folder_str):
     """Read every CSV in a folder once; returns [(name, bytes)]."""
     return [(p.name, p.read_bytes()) for p in sorted(Path(folder_str).glob("*.csv"))]
-
-
-@st.cache_data(show_spinner=False)
-def _pair_scores(sig, _grids, streams, airs, interval_min):
-    """Diel cross-correlation for every stream x air combination.
-    `sig` identifies the inputs; `_grids` is not hashed (leading underscore)."""
-    out = {}
-    for s in streams:
-        for a in airs:
-            out[(s, a)] = pr.diel_xcorr(_grids[s], _grids[a], interval_min)
-    return out
 
 
 @st.cache_data(show_spinner=False)
@@ -302,23 +308,21 @@ st.caption(
     "strongest rule first: the same name apart from the air/stream code "
     "(AT_002 ↔ ST_002, LLC01_AT ↔ LLC01_WT), then the same site name and number, "
     "the same number, the same last two digits (HF_003 ↔ HF_103), and the same prefix. "
-    "The data is used only as a last resort: for streams with no name match, or to choose "
-    "between several air loggers that match equally well. It uses the diel correlation, "
-    "i.e. how closely the stream's daily cycle follows the air's (0–6 h lag). "
-    "One air logger can serve several streams. Change **Air logger** to override."
+    "Pairing uses the names only, never the temperature data. A stream with no name "
+    "match is left unpaired (choose its **Air logger** and tick **Run**), unless there is "
+    "only one air logger. One air logger can serve several streams. Change **Air logger** "
+    "to override any suggestion."
 )
 
 score_sig = _sig(tuple(sorted((f, len(b)) for f, b in files)), interval_min)
-scores = _pair_scores(score_sig, grids, tuple(streams), tuple(airs), int(interval_min))
-suggest = pr.suggest_pairs(streams, airs, {k: v[0] for k, v in scores.items()})
+suggest = pr.suggest_pairs(streams, airs)
 
 pair_rows = []
 for s in streams:
     a, basis = suggest[s]
-    check = pr.basis_note(s, a, basis, airs, {k: v[0] for k, v in scores.items()})
-    r, lag, days = scores.get((s, a), (np.nan, np.nan, np.nan)) if a else (np.nan, np.nan, np.nan)
+    days = pr.overlap_days(grids[s], grids[a], int(interval_min)) if a else np.nan
     pair_rows.append({"include": a is not None, "site_id": pr.site_label(s), "stream": s, "air": a,
-                      "basis": check, "diel_r": r, "lag_h": lag, "overlap_days": days})
+                      "basis": basis, "overlap_days": days})
 pairs_df = pd.DataFrame(pair_rows)
 _dup = pairs_df["site_id"].duplicated(keep=False)          # shortened labels collided
 pairs_df.loc[_dup, "site_id"] = pairs_df.loc[_dup, "stream"]
@@ -331,23 +335,15 @@ pairs_edit = st.data_editor(
         "stream": st.column_config.TextColumn("Stream logger", disabled=True),
         "air": st.column_config.SelectboxColumn("Air logger", options=airs, required=True),
         "basis": st.column_config.TextColumn("Suggested by", disabled=True),
-        "diel_r": st.column_config.NumberColumn("Diel r", format="%.3f", disabled=True,
-                                                help="Diel correlation of the suggested pair"),
-        "lag_h": st.column_config.NumberColumn("Lag (h)", format="%.2f", disabled=True),
-        "overlap_days": st.column_config.NumberColumn("Overlap (d)", format="%.1f", disabled=True),
+        "overlap_days": st.column_config.NumberColumn(
+            "Overlap (d)", format="%.1f", disabled=True,
+            help="Days of records where both the stream and the air logger have data"),
     },
     hide_index=True,
     width="stretch",
     num_rows="fixed",
     key="pair_editor_" + _sig(tuple(streams), tuple(airs)),
 )
-
-with st.expander("Diel correlation of every stream × air combination"):
-    mat = pd.DataFrame({a: [scores[(s, a)][0] for s in streams] for a in airs}, index=streams)
-    st.dataframe(mat.round(3), width="stretch")
-    st.caption("Rows are stream loggers, columns air loggers. Air loggers at one site "
-               "often score within a few thousandths of each other; then the pairing "
-               "should come from field notes rather than the data.")
 
 sel_pairs = pairs_edit[pairs_edit["include"] & pairs_edit["air"].notna()]
 dup_ids = sel_pairs["site_id"][sel_pairs["site_id"].duplicated()].tolist()
@@ -400,12 +396,14 @@ c_first, c_last = cov["paired_start"].min(), cov["paired_end"].max()
 common0, common1 = ps.common_period(cov)
 if range_mode == "All data":
     dr0, dr1 = ps.date_range(cov, "all")
+    dr_mode = "all"
 elif range_mode == "Common period (all sites)":
     if common0 is None:
         st.error("No period is shared by all selected sites. Choose **All data**, "
                  "**Custom**, or untick sites in the pair table.")
         st.stop()
     dr0, dr1 = ps.date_range(cov, "common")
+    dr_mode = "common"
 else:
     d0, d1 = c_first.date(), c_last.date()
     date_range = st.date_input("Custom dates", value=(d0, d1), min_value=d0, max_value=d1,
@@ -414,8 +412,10 @@ else:
         dr0, dr1 = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1]) + pd.Timedelta(days=1)
     else:
         dr0, dr1 = pd.Timestamp(d0), pd.Timestamp(d1) + pd.Timedelta(days=1)
+    dr_mode = (dr0, dr1 - pd.Timedelta(days=1))
 
-cov_view = ps.coverage_in_range(cov, dr0, dr1)
+spans = ps.record_spans(cov, dr0, dr1, dr_mode)
+cov_view = ps.coverage_in_range(cov, dr0, dr1, spans)
 n_full = int((cov_view["status"] == "covers whole range").sum())
 range_txt = "{} to {} ({} days)".format(dr0.date(), (dr1 - pd.Timedelta(days=1)).date(),
                                         (dr1 - dr0).days)
@@ -441,12 +441,16 @@ with st.expander("Data coverage by site", expanded=n_full < len(cov_view)):
                      "air_end": st.column_config.DatetimeColumn("Air end", format="YYYY-MM-DD"),
                      "paired_start": st.column_config.DatetimeColumn("Paired start", format="YYYY-MM-DD"),
                      "paired_end": st.column_config.DatetimeColumn("Paired end", format="YYYY-MM-DD"),
-                     "paired_days": st.column_config.NumberColumn("Paired days (all)", format="%.0f"),
                      "days_in_range": st.column_config.NumberColumn("Paired days in range", format="%.0f"),
+                     "range_days": st.column_config.NumberColumn("Range (d)", format="%.0f"),
                      "pct_of_range": st.column_config.NumberColumn("% of range", format="%.0f"),
                  })
-    st.caption("Paired = times with both the stream and the air record. Common period "
+    st.caption("Paired = days with both the stream and the air record. Range = {}; "
+               "% of range = paired days in range / range. This range is also the "
+               "record span for the annual whole-record rule. Common period "
                "for all sites: {}.".format(
+                   "start to end of the longer of the stream and air records, per site"
+                   if dr_mode == "all" else "the chosen dates ({} days)".format((dr1 - dr0).days),
                    "{} to {}".format(common0.date(), common1.date()) if common0 is not None
                    else "none"))
 
@@ -458,19 +462,15 @@ with st.expander("Settings", expanded=True):
             "Drop stream records ≤ (°C)", value=0.99, step=0.01, format="%.2f",
             help="R: filter(str_temp > 0.99). Removes ice-affected / out-of-water records. "
                  "The annual analysis also drops days with a stream mean ≤ 1 °C, as PASTA does.")
-        phase_method = st.radio(
-            "Phase calculation", ["atan2", "atan"], horizontal=True, key="phase_method",
-            format_func=lambda m: {"atan2": "atan2: fitted peak time (default)",
-                                   "atan": "atan: match the R scripts"}[m],
+        phase_method = st.selectbox(
+            "Phase calculation", ["atan2", "atan"], index=0, key="phase_method",
+            format_func=lambda m: {"atan2": "atan2: fitted peak time (recommended)",
+                                   "atan": "atan: match the PASTA R scripts"}[m],
             help="**atan2** returns the time of the fitted peak anywhere in the cycle and "
                  "wraps phase lags into ±half a cycle. **atan** reproduces the PASTA and "
                  "Diel PASTA R formulas, which only see half a cycle: annual phase 182.5–365 d "
                  "(a peak earlier in the year comes out half a year late) and diel phase 6–18 h "
                  "(the peak hour − 6 h; a stream peaking after midnight jumps by 12 h).")
-        min_cov = st.slider(
-            "Minimum day coverage (%)", 0, 100, 75, 5,
-            help="Days with fewer paired records than this share of a full day are not "
-                 "fitted (diel) and get no daily mean (annual). Set 0 to use every day.")
     with s2:
         st.markdown("**Annual signal**")
         yr_type = st.radio("Year type", ["water", "calendar"], horizontal=True,
@@ -483,14 +483,29 @@ with st.expander("Settings", expanded=True):
                  "drop) cover at least this share of the full water or calendar year "
                  "(365/366 days). Days before the record starts or after it ends count as "
                  "missing. Other years are dropped: no AmpRatio, phase lag or mean ratio.")
+        max_gap = st.number_input(
+            "Single year: maximum gap (days)", value=50, min_value=1, max_value=366, step=1,
+            disabled=not do_annual,
+            help="A year is dropped when its longest run of consecutive days with no fit "
+                 "day (no paired daily mean with stream > 1 °C, after the 1 °C drop) between "
+                 "two fit days is longer than this. Default 50 days (Johnson et al. 2020).")
         min_rec_pct = st.slider(
             "Whole record: minimum % of record", 0, 100, 75, 5,
             disabled=not do_annual,
             help="The whole-record fit is reported only if daily means with stream > 1 °C "
                  "(after the 1 °C drop) cover at least this share of the record span, "
-                 "first to last paired day.")
+                 "taken as the range in the coverage table: the longer of the stream and air "
+                 "records with **All data**, else the chosen dates.")
+        st.caption("Maximum gap default after Johnson et al. (2020), *J. Hydrology* 587, "
+                   "124929, [doi:10.1016/j.jhydrol.2020.124929]"
+                   "(https://doi.org/10.1016/j.jhydrol.2020.124929). Daily means use every "
+                   "day with records; day coverage applies to the diel analysis only.")
     with s3:
         st.markdown("**Diel**")
+        min_cov = st.slider(
+            "Minimum day coverage (%)", 0, 100, 75, 5, disabled=not do_diel,
+            help="Days with fewer paired records than this share of a full day are not "
+                 "fitted. Set 0 to fit every day, as the R code does.")
         r2_min = st.slider("Minimum adjusted R² (air and water)", 0.0, 1.0, 0.70, 0.05,
                            disabled=not do_diel,
                            help="Days kept only when both fits exceed this (R: AdjRsqr > 0.7).")
@@ -502,7 +517,7 @@ with st.expander("Settings", expanded=True):
                    "With atan2, phase_h is the hour of the fitted daily peak.")
 
 run_sig = _sig(score_sig, tuple(pair_list), tuple(analyses), water_min, min_cov, yr_type,
-               phase_method,
+               phase_method, max_gap,
                min_year_pct, min_rec_pct, r2_min, roll_k, str(dr0), str(dr1))
 
 
@@ -512,14 +527,15 @@ if st.button("Run PASTA", type="primary"):
             # the same call a script would make: pastatemp.run_loggers()
             result = ps.run_loggers(
                 grids, sel_pairs.reset_index(drop=True), analyses=pkg_analyses,
-                date_range=(dr0, dr1 - pd.Timedelta(days=1)), interval_min=int(interval_min),
+                date_range=dr_mode, interval_min=int(interval_min),
                 water_min_C=water_min, min_coverage=min_cov / 100, phase_method=phase_method,
-                yr_type=yr_type, min_year_pct=float(min_year_pct),
+                yr_type=yr_type, min_year_pct=float(min_year_pct), max_gap_days=float(max_gap),
                 min_record_pct=float(min_rec_pct),
                 r2_min=r2_min, roll_k=int(roll_k))
             res = {"result": result, "T_y": result.paired, "summary": result.summary,
                    "analyses": list(analyses), "yr_type": yr_type,
                    "min_year_pct": int(min_year_pct), "min_rec_pct": int(min_rec_pct),
+                   "max_gap": int(max_gap),
                    "sig": run_sig, "run_ts": result.run_ts}
             if result.diel is not None:
                 res.update(fits=result.diel.fits, metrics=result.diel.metrics)
@@ -595,26 +611,34 @@ if ran_annual:
                                                      for r in low.itertuples())))
             yl0 = ann["yearly"]
             if len(yl0):
-                ok_by_site = yl0.groupby("site_id")["meets_year_pct"].any()
+                max_gap = res.get("max_gap", 50)
+                ok_by_site = yl0.groupby("site_id")["meets_criteria"].any()
                 none_ok = ok_by_site[~ok_by_site].index.tolist()
                 if none_ok:
                     best = yl0[yl0["site_id"].isin(none_ok)].groupby("site_id")["pct_year_fit"].max()
                     st.warning(
-                        "No single year reaches {}% of the {} year for: {}. These records are "
-                        "shorter than the year threshold, so there are no by-year AmpRatio, phase "
-                        "lag or mean ratio. Use the **Whole record** results for these sites, or "
-                        "lower **Single year: minimum % of the year**.".format(
-                            res["min_year_pct"], res["yr_type"], ", ".join(
+                        "No single year passes (at least {}% of the {} year and no gap over {} "
+                        "days) for: {}. There are no by-year AmpRatio, phase lag or mean ratio "
+                        "for these sites. Use the **Whole record** results, or relax the "
+                        "single-year settings.".format(
+                            res["min_year_pct"], res["yr_type"], max_gap, ", ".join(
                                 "{} (best year {:.0f}%)".format(s, best[s]) for s in none_ok)))
-                fail = yl0[~yl0["meets_year_pct"] & ~yl0["site_id"].isin(none_ok)]
+
+                def _why(r):
+                    w = []
+                    if not r.meets_year_pct:
+                        w.append("{} of {} d, {:.0f}%".format(r.n_days_fit, r.n_days_in_year,
+                                                             r.pct_year_fit))
+                    if not r.meets_max_gap and pd.notna(r.longest_gap_days):
+                        w.append("gap {} d".format(int(r.longest_gap_days)))
+                    return "; ".join(w)
+                fail = yl0[~yl0["meets_criteria"] & ~yl0["site_id"].isin(none_ok)]
                 if len(fail):
                     st.info(
-                        "Years with fit days on less than {}% of the year were dropped (no "
-                        "signal metrics): {}.".format(
-                            res["min_year_pct"], "; ".join(
-                                "{} {} ({} of {} d, {:.0f}%)".format(
-                                    r.site_id, r.year, r.n_days_fit, r.n_days_in_year,
-                                    r.pct_year_fit)
+                        "Years dropped (under {}% of the year, or a gap over {} days; no signal "
+                        "metrics): {}.".format(
+                            res["min_year_pct"], max_gap, " | ".join(
+                                "{} {} ({})".format(r.site_id, r.year, _why(r))
                                 for r in fail.itertuples())))
             short_sites = rec_t[(rec_t["record_span_days"] > 0) & (rec_t["record_span_days"] < 300)]
             if len(short_sites):
@@ -628,17 +652,21 @@ if ran_annual:
         st.dataframe(ann["record"], hide_index=True, width="stretch")
         st.caption("Fitted to every day with stream > 1 °C (n_days_fit). Signal metrics are "
                    "reported only when those days cover at least {}% of the record span "
-                   "(pct_record_fit = n_days_fit / record_span_days). AmpRatio and mean ratio are water / air; "
+                   "(pct_record_fit = n_days_fit / record_span_days; the span is the range in "
+                   "the coverage table). AmpRatio and mean ratio are water / air; "
                    .format(res["min_rec_pct"]) +
                    "phase lag is water − air in days. TS__Slope is the daily thermal sensitivity "
                    "(stream ~ air, Kelleher et al. 2012).")
         st.markdown("#### By " + res["yr_type"] + " year")
         st.dataframe(ann["yearly"], hide_index=True, width="stretch")
         st.caption("pct_year_fit = n_days_fit / n_days_in_year: days with stream > 1 °C as a "
-                   "share of the full year (365/366 days). A year below {}% is dropped "
-                   "(meets_year_pct = False): no AmpRatio, phase lag or mean ratio; its thermal "
-                   "sensitivity is still reported, as in PASTA. count is all paired days, "
-                   "including cold days.".format(res["min_year_pct"]))
+                   "share of the full year (365/366 days). longest_gap_days = longest run of "
+                   "days with no such day, between two of them. A year below {}% "
+                   "(meets_year_pct = False) or with a gap over {} days (meets_max_gap = False; "
+                   "Johnson et al. 2020) is dropped (meets_criteria = False): no AmpRatio, phase "
+                   "lag or mean ratio; its thermal sensitivity is still reported, as in PASTA. "
+                   "count is all paired days, including cold days.".format(
+                       res["min_year_pct"], res.get("max_gap", 50)))
         _annual_plots()
         yl = ann["yearly"].dropna(subset=["AmpRatio", "PhaseLag_d"]) if len(ann["yearly"]) else ann["yearly"]
         if len(yl):

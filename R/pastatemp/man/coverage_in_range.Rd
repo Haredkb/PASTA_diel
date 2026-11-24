@@ -4,16 +4,20 @@
 \alias{coverage_in_range}
 \title{Coverage of each site within a date range}
 \usage{
-coverage_in_range(cov, start, end)
+coverage_in_range(cov, start, end, spans = NULL)
 }
 \arguments{
 \item{cov}{Output of [coverage()].}
 
 \item{start, end}{Range, end exclusive (e.g. from [date_range()]).}
+
+\item{spans}{Optional named numeric from [record_spans()]: each site's range in
+days; default end - start.}
 }
 \value{
-The coverage table plus days_in_range, pct_of_range and status
-  ('covers whole range', 'starts ...', 'ends ...', 'gaps inside range', ...).
+The coverage table (without paired_days) plus days_in_range (paired days
+  in the range), range_days, pct_of_range and status ('covers whole range',
+  'starts ...', 'ends ...', 'gaps inside range', ...).
 }
 \description{
 Coverage of each site within a date range

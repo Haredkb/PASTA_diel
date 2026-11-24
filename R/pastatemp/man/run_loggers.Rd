@@ -26,8 +26,10 @@ site has paired data) or c(start, end) dates, inclusive.}
 
 \item{interval_min}{Logging interval in minutes.}
 
-\item{...}{Settings for [run_annual()] / [run_diel()]: water_min_C, min_coverage,
-phase_method, yr_type, min_year_pct, min_record_pct, r2_min, roll_k.}
+\item{...}{Settings for [run_annual()] / [run_diel()]: water_min_C, min_coverage
+(diel), phase_method, yr_type, min_year_pct, max_gap_days, min_record_pct, r2_min,
+roll_k. The annual record span is the longer of each site's stream and air
+records for `"all"`, else the chosen range.}
 }
 \value{
 A `pasta_result` with pairs, coverage (per site, in the range) and date_range.

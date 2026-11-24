@@ -8,8 +8,10 @@ annual_metrics(
   daily,
   yr_type = "water",
   min_year_pct = 25,
+  max_gap_days = 50,
   min_record_pct = 75,
-  phase_method = DEFAULT_PHASE_METHOD
+  phase_method = DEFAULT_PHASE_METHOD,
+  record_span_days = NULL
 )
 }
 \arguments{
@@ -17,9 +19,11 @@ annual_metrics(
 
 \item{yr_type}{`"water"` or `"calendar"`.}
 
-\item{min_year_pct, min_record_pct}{The rules above (default 25 and 75).}
+\item{min_year_pct, max_gap_days, min_record_pct}{The rules above (default 25, 50, 75).}
 
 \item{phase_method}{`"atan2"` or `"atan"`, see [PHASE_METHODS].}
+
+\item{record_span_days}{Optional named numeric/list of record spans (days) by site.}
 }
 \value{
 list(record, yearly, fits).
@@ -31,8 +35,12 @@ with stream > 1 \enc{°}{deg}C.
   (or calendar) year, 365 or 366 days. Below `min_year_pct` the year is dropped
   (`meets_year_pct = FALSE`): no AmpRatio, PhaseLag_d or Ratio_Mean; thermal
   sensitivity is still reported. A partial first or last year counts the days
-  outside the record as missing.
-* record: `pct_record_fit = 100 * n_days_fit / record_span_days`, the span from the
-  first to the last paired day (cold days included). Below
-  `min_record_pct` the signal metrics are NA (`meets_record_pct = FALSE`).
+  outside the record as missing. A year is also dropped when its longest gap
+  between fit days (`longest_gap_days`) exceeds `max_gap_days` (default 50 d,
+  following Johnson et al. 2020, [JOHNSON_2020]); `meets_criteria` combines both.
+* record: `pct_record_fit = 100 * n_days_fit / record_span_days`. The span is
+  `record_span_days[[site_id]]` when given ([run_loggers()]: the longer of the
+  stream and air records, or the chosen date range), else the first to the last
+  paired day (cold days included). Below `min_record_pct` the signal metrics are
+  NA (`meets_record_pct = FALSE`).
 }

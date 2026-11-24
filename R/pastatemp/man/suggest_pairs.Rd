@@ -2,22 +2,19 @@
 % Please edit documentation in R/pairing.R
 \name{suggest_pairs}
 \alias{suggest_pairs}
-\title{Suggest one air logger for every stream logger (names first)}
+\title{Suggest one air logger for every stream logger (by name only)}
 \usage{
-suggest_pairs(streams, airs, score)
+suggest_pairs(streams, airs)
 }
 \arguments{
 \item{streams, airs}{Logger names.}
-
-\item{score}{Named numeric of diel r; each name is the stream and air logger
-names joined by a carriage return (`paste(stream, air, sep = "\\\\r")`).}
 }
 \value{
 Named list stream -> list(air, basis).
 }
 \description{
-1. Names first: each stream takes the air logger(s) at its strongest name tier;
-   several candidates are separated by the best diel correlation.
-2. Data last: streams with no name match get the best-scoring free air logger,
-   then the best-scoring air logger overall.
+Pairing uses the logger names only (see [NAME_TIERS]), never the data. Each
+stream takes the air logger(s) at its strongest name tier; with several
+candidates the first by name is taken and flagged 'confirm'. A stream with no
+name match gets the only air logger when there is just one, else `NA`.
 }

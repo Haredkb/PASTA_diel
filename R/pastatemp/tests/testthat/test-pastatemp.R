@@ -53,13 +53,26 @@ wy2025 <- function(gap_days = 0, cold_days = 0) {
 }
 
 test_that("a year needs a minimum % of the year", {
-  y <- run_annual(wy2025(91), min_year_pct = 75)$yearly[1, ]                    # 274 / 365 = 75.1 %
+  y <- run_annual(wy2025(91), min_year_pct = 75, max_gap_days = 366)$yearly[1, ]   # 75.1 %
   expect_equal(c(y$n_days_in_year, y$n_days_fit, y$pct_year_fit), c(365, 274, 75.1))
   expect_true(y$meets_year_pct && is.finite(y$AmpRatio))
   y <- run_annual(wy2025(92), min_year_pct = 75)$yearly[1, ]                    # 273 / 365 = 74.8 %
   expect_false(y$meets_year_pct)
   expect_true(is.na(y$AmpRatio) && is.finite(y$TS__Slope))
   expect_true(run_annual(wy2025(92), min_year_pct = 70)$yearly$meets_year_pct[1])
+})
+
+test_that("maximum yearly gap, default 50 days", {
+  y <- run_annual(wy2025(50))$yearly[1, ]
+  expect_equal(y$longest_gap_days, 50)
+  expect_true(y$meets_max_gap && y$meets_criteria && is.finite(y$AmpRatio))
+  y <- run_annual(wy2025(51))$yearly[1, ]
+  expect_equal(y$longest_gap_days, 51)
+  expect_true(y$meets_year_pct)
+  expect_false(y$meets_max_gap || y$meets_criteria)
+  expect_true(is.na(y$AmpRatio) && is.finite(y$TS__Slope))
+  expect_true(run_annual(wy2025(51), max_gap_days = 60)$yearly$meets_criteria[1])
+  expect_equal(run_annual(wy2025(30, cold_days = 30))$yearly$longest_gap_days[1], 60)
 })
 
 test_that("year % default is 25", {
@@ -105,14 +118,13 @@ test_that("name tiers", {
   for (k in cases) expect_identical(name_match_level(k[1], k[2]), as.integer(k[3]), info = k[1])
 })
 
-test_that("names beat data; data is the last resort", {
-  sc <- c("ST_001\rAT_002" = 0.9, "ST_001\rAT_001" = 0.5, "ST_002\rAT_001" = 0.9, "ST_002\rAT_002" = 0.5)
-  out <- suggest_pairs(c("ST_001", "ST_002"), c("AT_001", "AT_002"), sc)
+test_that("pairing uses names only", {
+  out <- suggest_pairs(c("ST_001", "ST_002"), c("AT_001", "AT_002"))
   expect_equal(out$ST_001$air, "AT_001")
   expect_equal(out$ST_002$air, "AT_002")
   expect_true(startsWith(out$ST_001$basis, "name"))
-  out <- suggest_pairs("Brook", c("AT_001", "AT_002"), c("Brook\rAT_002" = 0.8, "Brook\rAT_001" = 0.4))
-  expect_equal(out$Brook, list(air = "AT_002", basis = "data: best diel correlation"))
+  expect_true(is.na(suggest_pairs("Brook", c("AT_001", "AT_002"))$Brook$air))
+  expect_equal(suggest_pairs("Brook", "AT_001")$Brook$air, "AT_001")
 })
 
 test_that("site labels", {
@@ -165,12 +177,36 @@ test_that("coverage and date range", {
   r <- date_range(cov, "all")
   expect_equal(r, as.POSIXct(c("2024-10-01", "2025-10-01"), tz = "UTC"))
   inr <- coverage_in_range(cov, r[1], r[2])
+  expect_false("paired_days" %in% names(inr))
+  sp <- record_spans(cov, r[1], r[2], "all")
+  expect_equal(unname(sp), c(365, 273))
+  inr2 <- coverage_in_range(cov, r[1], r[2], sp)
+  expect_equal(inr2$range_days, c(365, 273))
+  expect_equal(inr2$pct_of_range[2], 100)
+  expect_equal(unname(record_spans(cov, r[1], r[2], "common")), c(365, 365))
   expect_false(all_sites_cover(inr))
   expect_true(startsWith(inr$status[inr$site_id == "S2"], "starts"))
   rc <- date_range(cov, "common")
   expect_true(all_sites_cover(coverage_in_range(cov, rc[1], rc[2])))
   expect_equal(date_range(cov, c("2025-02-01", "2025-02-28")),
                as.POSIXct(c("2025-02-01", "2025-03-01"), tz = "UTC"))
+})
+
+test_that("record span: longer logger with all data, else the range", {
+  lg <- two_site_loggers()
+  lg$AT_002 <- lg$AT_001
+  res <- run_loggers(lg, list(c("S2", "ST_002", "AT_002")), analyses = "annual", water_min_C = -99)
+  expect_equal(res$annual$record$record_span_days[1], 365)
+  expect_equal(res$annual$record$n_days_fit[1], 273)
+  res <- run_loggers(lg, list(c("S2", "ST_002", "AT_002")), analyses = "annual", water_min_C = -99,
+                     date_range = c("2025-01-01", "2025-06-30"))
+  expect_equal(res$annual$record$record_span_days[1], 181)
+})
+
+test_that("annual daily means ignore day coverage; diel uses it", {
+  half <- dat[as.integer(format(dat$time, "%H")) < 12 & dat$time < as.POSIXct("2025-10-01", tz = "UTC"), ]
+  expect_equal(nrow(run_annual(half, water_min_C = -99)$daily), 365)
+  expect_equal(nrow(run_diel(half, water_min_C = -99)$fits), 0)
 })
 
 test_that("run_loggers: common period, summary and outputs", {

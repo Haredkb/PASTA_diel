@@ -4,15 +4,18 @@
 \alias{span_coverage}
 \title{Fit days as a share of a record span}
 \usage{
-span_coverage(all_dates, fit_dates)
+span_coverage(all_dates, fit_dates, span = NULL)
 }
 \arguments{
 \item{all_dates}{All paired days (cold days included) of the record or year.}
 
 \item{fit_dates}{Days with a stream daily mean > 1 \enc{°}{deg}C (after the 1 \enc{°}{deg}C drop).}
+
+\item{span}{Record span in days; when `NULL`, the first to the last paired day.
+[run_loggers()] passes the longer of the stream and air records, or the chosen range.}
 }
 \value{
-list(n_days_fit, span_days, pct_fit), span = first to last paired day.
+list(n_days_fit, span_days, pct_fit).
 }
 \description{
 Fit days as a share of a record span

@@ -149,113 +149,43 @@ name_match_level <- function(stream_name, air_name) {
   NA_integer_
 }
 
-#' Diel cross-correlation of a stream and an air logger
-#'
-#' Maximum correlation of the 24 h detrended signals with the stream lagging air
-#' by 0 to `max_lag_h` hours.
+#' Days of records where both loggers have data
 #' @param stream,air Logger data.frames.
 #' @param interval_min Logging interval in minutes.
-#' @param max_lag_h Largest lag tried, hours.
-#' @return c(r, lag_h, overlap_days).
 #' @export
-diel_xcorr <- function(stream, air, interval_min = 15, max_lag_h = 6) {
-  m <- merge(stream, air, by = "timestamp", suffixes = c("_w", "_a"))
-  m <- m[stats::complete.cases(m), , drop = FALSE]
-  m <- m[order(m$timestamp), , drop = FALSE]
-  per_day <- round(24 * 60 / interval_min)
-  if (nrow(m) < 3 * per_day) return(c(NaN, NaN, nrow(m) / per_day))
-  w <- m$temp_C_w - roll_center(m$temp_C_w, per_day, per_day %/% 2)
-  a <- m$temp_C_a - roll_center(m$temp_C_a, per_day, per_day %/% 2)
-  best <- c(-1, 0)
-  n <- length(w)
-  for (k in 0:floor(max_lag_h * 60 / interval_min)) {
-    ww <- if (k) w[(k + 1):n] else w
-    aa <- if (k) a[1:(n - k)] else a
-    ok <- is.finite(ww) & is.finite(aa)
-    if (sum(ok) < per_day) next
-    r <- stats::cor(ww[ok], aa[ok])
-    if (is.finite(r) && r > best[1]) best <- c(r, k * interval_min / 60)
-  }
-  c(best, nrow(m) / per_day)
+overlap_days <- function(stream, air, interval_min = 15) {
+  ts <- stream$timestamp[!is.na(stream$temp_C)]
+  ta <- air$timestamp[!is.na(air$temp_C)]
+  sum(ts %in% ta) / (24 * 60 / interval_min)
 }
 
-.score <- function(score, s, a) {
-  v <- score[paste(s, a, sep = "\r")]
-  if (length(v) == 0 || is.na(v)) NaN else unname(v)
-}
-
-#' Suggest one air logger for every stream logger (names first)
+#' Suggest one air logger for every stream logger (by name only)
 #'
-#' 1. Names first: each stream takes the air logger(s) at its strongest name tier;
-#'    several candidates are separated by the best diel correlation.
-#' 2. Data last: streams with no name match get the best-scoring free air logger,
-#'    then the best-scoring air logger overall.
+#' Pairing uses the logger names only (see [NAME_TIERS]), never the data. Each
+#' stream takes the air logger(s) at its strongest name tier; with several
+#' candidates the first by name is taken and flagged 'confirm'. A stream with no
+#' name match gets the only air logger when there is just one, else `NA`.
 #' @param streams,airs Logger names.
-#' @param score Named numeric of diel r; each name is the stream and air logger
-#'   names joined by a carriage return (`paste(stream, air, sep = "\\\\r")`).
 #' @return Named list stream -> list(air, basis).
 #' @export
-suggest_pairs <- function(streams, airs, score) {
+suggest_pairs <- function(streams, airs) {
   out <- list()
-  used <- character(0)
-  key <- function(r) ifelse(is.finite(r), r, -9)
   for (s in streams) {
     lv <- vapply(airs, function(a) name_match_level(s, a), integer(1))
     lv <- lv[!is.na(lv)]
-    if (!length(lv)) next
-    best <- min(lv)
-    hits <- names(lv)[lv == best]
-    basis <- paste0("name: ", NAME_TIERS[[as.character(best)]])
-    if (length(hits) > 1) {
-      sc <- vapply(hits, function(a) .score(score, s, a), numeric(1))
-      hits <- hits[order(-key(sc), method = "radix")]
-      basis <- paste0(basis, " (", length(hits), " candidates; best diel r)")
-    }
-    out[[s]] <- list(air = hits[1], basis = basis)
-    used <- c(used, hits[1])
-  }
-  remaining <- streams[!streams %in% names(out)]
-  if (length(remaining) && length(airs)) {
-    cs <- expand.grid(a = airs, s = remaining, stringsAsFactors = FALSE)[, c("s", "a")]
-    cs$r <- mapply(function(s, a) .score(score, s, a), cs$s, cs$a)
-    cs <- cs[order(-key(cs$r), method = "radix"), , drop = FALSE]
-    for (i in seq_len(nrow(cs))) {
-      s <- cs$s[i]
-      a <- cs$a[i]
-      if (s %in% names(out) || a %in% used || !is.finite(cs$r[i])) next
-      out[[s]] <- list(air = a, basis = "data: best diel correlation")
-      used <- c(used, a)
-    }
-  }
-  for (s in remaining) {
-    if (s %in% names(out)) next
-    r <- vapply(airs, function(a) .score(score, s, a), numeric(1))
-    ok <- is.finite(r)
-    if (any(ok)) {
-      top <- airs[ok][r[ok] == max(r[ok])]
-      out[[s]] <- list(air = utils::tail(csort(top), 1),
-                       basis = "data: best diel correlation (shared air)")
+    if (length(lv)) {
+      best <- min(lv)
+      hits <- csort(names(lv)[lv == best])
+      basis <- paste0("name: ", NAME_TIERS[[as.character(best)]])
+      if (length(hits) > 1) basis <- paste0(basis, " - confirm (", length(hits), " air loggers match)")
+      out[[s]] <- list(air = hits[1], basis = basis)
+    } else if (length(airs) == 1) {
+      out[[s]] <- list(air = airs[1], basis = "only air logger - confirm")
     } else {
-      out[[s]] <- list(air = NA_character_, basis = "no name match and no overlapping data")
+      out[[s]] <- list(air = NA_character_, basis = "no name match - choose the air logger")
     }
   }
   out
-}
-
-#' Basis note for the pair table
-#'
-#' The basis, plus a 'confirm' flag when a data-based pick is uncertain.
-#' @param stream,air,basis Stream, chosen air logger and basis from [suggest_pairs()].
-#' @param airs Air logger names.
-#' @param score Named numeric of diel r, as in [suggest_pairs()].
-#' @export
-basis_note <- function(stream, air, basis, airs, score) {
-  if (startsWith(basis, "name") || is.na(air)) return(basis)
-  rs <- vapply(airs, function(a) .score(score, stream, a), numeric(1))
-  rs <- sort(rs[is.finite(rs)], decreasing = TRUE)
-  if (length(rs) > 1 && rs[1] - rs[2] < 0.02) return(paste0(basis, " - confirm (air loggers score alike)"))
-  if (length(rs) && rs[1] < 0.3) return(paste0(basis, " - confirm (weak diel link)"))
-  basis
 }
 
 #' Suggest air-stream pairs
@@ -264,8 +194,8 @@ basis_note <- function(stream, air, basis, airs, score) {
 #' @param types Named character `c(name = "air" | "stream" | "exclude")`; default
 #'   from [classify_loggers()].
 #' @param interval_min Logging interval in minutes.
-#' @return data.frame site_id, stream, air, basis, diel_r, lag_h, overlap_days.
-#'   'basis' says 'confirm ...' when the data cannot tell the air loggers apart.
+#' @return data.frame site_id, stream, air, basis, overlap_days. 'basis' says
+#'   'confirm' when the pick should be checked; air is `NA` with no name match.
 #' @export
 pair_loggers <- function(loggers, types = NULL, interval_min = 15) {
   if (is.null(types)) {
@@ -274,27 +204,18 @@ pair_loggers <- function(loggers, types = NULL, interval_min = 15) {
   }
   airs <- names(types)[types == "air"]
   streams <- names(types)[types == "stream"]
-  sc <- list()
-  for (s in streams) for (a in airs) {
-    sc[[paste(s, a, sep = "\r")]] <- diel_xcorr(loggers[[s]], loggers[[a]], interval_min)
-  }
-  r_only <- vapply(sc, function(v) v[1], numeric(1))
-  sugg <- suggest_pairs(streams, airs, r_only)
+  sugg <- suggest_pairs(streams, airs)
   rows <- lapply(streams, function(s) {
     a <- sugg[[s]]$air
-    v <- if (!is.na(a)) sc[[paste(s, a, sep = "\r")]] else c(NaN, NaN, NaN)
-    df(site_id = site_label(s), stream = s, air = a,
-       basis = basis_note(s, a, sugg[[s]]$basis, airs, r_only),
-       diel_r = v[1], lag_h = v[2], overlap_days = v[3])
+    df(site_id = site_label(s), stream = s, air = a, basis = sugg[[s]]$basis,
+       overlap_days = if (!is.na(a)) overlap_days(loggers[[s]], loggers[[a]], interval_min) else NaN)
   })
   out <- rbind_all(rows)
   if (!nrow(out)) {
     out <- df(site_id = character(0), stream = character(0), air = character(0),
-              basis = character(0), diel_r = numeric(0), lag_h = numeric(0),
-              overlap_days = numeric(0))
+              basis = character(0), overlap_days = numeric(0))
   }
   dup <- duplicated(out$site_id) | duplicated(out$site_id, fromLast = TRUE)
   out$site_id[dup] <- out$stream[dup]
-  attr(out, "scores") <- sc
   out
 }

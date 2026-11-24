@@ -85,19 +85,52 @@ date_range <- function(cov, mode = "all") {
   c(day_floor(c0), day_floor(c1) + 86400)
 }
 
+#' Days from start to end of the longer of each site's stream and air records
+#' @param cov Output of [coverage()].
+#' @return Named numeric, by site_id.
+#' @export
+logger_span_days <- function(cov) {
+  dd <- function(a, b) ifelse(is.na(a) | is.na(b), 0,
+                              as.numeric(as.Date(b) - as.Date(a)) + 1)
+  stats::setNames(pmax(dd(cov$stream_start, cov$stream_end), dd(cov$air_start, cov$air_end)),
+                  cov$site_id)
+}
+
+#' Record span per site
+#'
+#' Used for '% of range' and for the annual whole-record rule (record_span_days).
+#' @param cov Output of [coverage()].
+#' @param start,end Range, end exclusive.
+#' @param mode `"all"`: start to end of the longer of the site's stream and air
+#'   records; otherwise the chosen range, end - start.
+#' @return Named numeric, by site_id.
+#' @export
+record_spans <- function(cov, start, end, mode = "all") {
+  if (is.character(mode) && length(mode) == 1 && mode == "all") return(logger_span_days(cov))
+  n <- max(as.numeric(difftime(as_utc(end), as_utc(start), units = "days")), 1)
+  stats::setNames(rep(n, nrow(cov)), cov$site_id)
+}
+
 #' Coverage of each site within a date range
 #' @param cov Output of [coverage()].
 #' @param start,end Range, end exclusive (e.g. from [date_range()]).
-#' @return The coverage table plus days_in_range, pct_of_range and status
-#'   ('covers whole range', 'starts ...', 'ends ...', 'gaps inside range', ...).
+#' @param spans Optional named numeric from [record_spans()]: each site's range in
+#'   days; default end - start.
+#' @return The coverage table (without paired_days) plus days_in_range (paired days
+#'   in the range), range_days, pct_of_range and status ('covers whole range',
+#'   'starts ...', 'ends ...', 'gaps inside range', ...).
 #' @export
-coverage_in_range <- function(cov, start, end) {
-  out <- cov[, setdiff(names(cov), "paired_index"), drop = FALSE]
-  n_days <- max(as.numeric(difftime(end, start, units = "days")), 1)
+coverage_in_range <- function(cov, start, end, spans = NULL) {
+  out <- cov[, setdiff(names(cov), c("paired_index", "paired_days")), drop = FALSE]
+  n_all <- max(as.numeric(difftime(end, start, units = "days")), 1)
   tol <- 86400
   days <- integer(nrow(cov))
+  rng <- numeric(nrow(cov))
   status <- character(nrow(cov))
   for (i in seq_len(nrow(cov))) {
+    sid <- cov$site_id[i]
+    n_days <- if (!is.null(spans) && sid %in% names(spans)) max(spans[[sid]], 1) else n_all
+    rng[i] <- n_days
     idx <- cov$paired_index[[i]]
     k <- idx[idx >= start & idx < end]
     days[i] <- length(unique(day_of(k)))
@@ -118,7 +151,8 @@ coverage_in_range <- function(cov, start, end) {
     }
   }
   out$days_in_range <- days
-  out$pct_of_range <- 100 * days / n_days
+  out$range_days <- rng
+  out$pct_of_range <- 100 * days / rng
   out$status <- status
   out
 }

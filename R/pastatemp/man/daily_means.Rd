@@ -4,12 +4,13 @@
 \alias{daily_means}
 \title{Daily means of paired records}
 \usage{
-daily_means(T_y, min_coverage = 0.75, interval_min = 15)
+daily_means(T_y, min_coverage = 0, interval_min = 15)
 }
 \arguments{
 \item{T_y}{Paired records (site_id, DateTime_r, str_temp, air_temp).}
 
-\item{min_coverage}{Share of a full day of paired records needed for a daily mean.}
+\item{min_coverage}{Share of a full day of paired records needed for a daily mean
+(default 0: every day with records gets a mean, as in PASTA).}
 
 \item{interval_min}{Logging interval in minutes.}
 }

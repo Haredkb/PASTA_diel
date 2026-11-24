@@ -8,11 +8,12 @@ run_annual(
   data,
   yr_type = "water",
   min_year_pct = 25,
+  max_gap_days = 50,
   min_record_pct = 75,
   water_min_C = 0.99,
-  min_coverage = 0.75,
   interval_min = NULL,
-  phase_method = DEFAULT_PHASE_METHOD
+  phase_method = DEFAULT_PHASE_METHOD,
+  record_span_days = NULL
 )
 }
 \arguments{
@@ -25,18 +26,25 @@ Sub-daily records are averaged to daily means; daily means are used as they are.
 the 1 \enc{°}{deg}C drop) on at least this % of the full water or calendar year, 365/366
 days (default 25). Other years get no AmpRatio, PhaseLag_d, Ratio_Mean.}
 
+\item{max_gap_days}{A year is also dropped when its longest run of days without a
+fit day (between fit days) is longer than this (default 50 d, following
+Johnson et al. 2020; see [JOHNSON_2020]).}
+
 \item{min_record_pct}{The whole record needs fit days on at least this % of the
-record span, first to last paired day (default 75).}
+record span (default 75).}
 
 \item{water_min_C}{Sub-daily stream records at or below this are dropped before
-averaging. Days with a stream mean <= 1 \enc{°}{deg}C are always dropped (as in PASTA).}
-
-\item{min_coverage}{Share of a full day of paired records needed for a daily mean.}
+averaging. Days with a stream mean <= 1 \enc{°}{deg}C are always dropped (as in PASTA).
+Every day with records gets a daily mean (min_coverage is for the diel analysis only).}
 
 \item{interval_min}{Logging interval for sub-daily data; inferred when `NULL`.}
 
 \item{phase_method}{`"atan2"` (default; phase_d is the day of the fitted peak,
 lag wrapped into (-182.5, 182.5] d) or `"atan"` (the PASTA R formula).}
+
+\item{record_span_days}{Optional named numeric of record spans (days) by site;
+[run_loggers()] passes the longer of the stream and air records (`"all"`) or the
+chosen range. Default: first to last paired day.}
 }
 \value{
 A `pasta_annual` list: daily, record, yearly, fits, settings.

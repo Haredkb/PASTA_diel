@@ -27,6 +27,7 @@ from .coverage import clip_loggers as _clip_loggers
 from .coverage import coverage as _coverage
 from .coverage import coverage_in_range as _coverage_in_range
 from .coverage import date_range as _date_range
+from .coverage import record_spans as _record_spans
 from .phase import DEFAULT_PHASE_METHOD, check_method
 from .pairing import classify_loggers, pair_loggers
 from .readers import read_loggers
@@ -234,9 +235,9 @@ def run_diel(data, interval_min=None, water_min_C=0.99, min_coverage=0.75,
     return DielResult(paired, fits, metrics, pd.DataFrame(rows), settings)
 
 
-def run_annual(data, yr_type="water", min_year_pct=25, min_record_pct=75,
-               water_min_C=0.99, min_coverage=0.75, interval_min=None,
-               phase_method=DEFAULT_PHASE_METHOD):
+def run_annual(data, yr_type="water", min_year_pct=25, max_gap_days=50, min_record_pct=75,
+               water_min_C=0.99, interval_min=None, phase_method=DEFAULT_PHASE_METHOD,
+               record_span_days=None):
     """
     Annual-signal PASTA: fit temp ~ sin(2πd/365) + cos(2πd/365) to daily mean air
     and stream temperature for each site, for the whole record and for each year,
@@ -250,12 +251,19 @@ def run_annual(data, yr_type="water", min_year_pct=25, min_record_pct=75,
                    the 1 °C drop) on at least this % of the full water (or calendar)
                    year, 365/366 days (default 25). Other years get no AmpRatio /
                    PhaseLag_d / Ratio_Mean in `yearly`.
+    max_gap_days:  a year is also dropped when its longest run of days without a fit
+                   day (between fit days) is longer than this (default 50 d, following
+                   Johnson et al. 2020; see pastatemp.annual.JOHNSON_2020).
     min_record_pct: the whole record needs fit days on at least this % of the record
-                   span, first to last paired day (default 75).
-                   Otherwise `record` gets no AmpRatio / PhaseLag_d / Ratio_Mean.
+                   span (default 75). Otherwise `record` gets no AmpRatio / PhaseLag_d /
+                   Ratio_Mean.
+    record_span_days: {site_id: days} record span for that rule; run_loggers() passes
+                   the longer of the stream and air records ('all') or the chosen date
+                   range. When None: first to last paired day.
     water_min_C:   sub-daily stream records at or below this are dropped before averaging.
                    Days with a stream mean ≤ 1 °C are always dropped (as in PASTA).
-    min_coverage:  share of a full day of paired records needed for a daily mean.
+                   Every day with records gets a daily mean (no day-coverage rule;
+                   min_coverage applies to the diel analysis only).
     interval_min:  logging interval for sub-daily data; inferred when None.
     phase_method:  'atan2' (default): phase_d = day of the fitted peak, lag wrapped
                    into (-182.5, 182.5] d. 'atan': the PASTA R formula, to reproduce
@@ -273,16 +281,16 @@ def run_annual(data, yr_type="water", min_year_pct=25, min_record_pct=75,
     else:
         interval_min = interval_min or _infer_interval(d)
         paired = _to_paired(d, interval_min, water_min_C)
-        daily = _annual.daily_means(paired, min_coverage=min_coverage, interval_min=interval_min)
+        daily = _annual.daily_means(paired, min_coverage=0, interval_min=interval_min)
     check_method(phase_method)
     res = _annual.annual_metrics(daily, yr_type=yr_type, min_year_pct=float(min_year_pct),
+                                 max_gap_days=float(max_gap_days),
                                  min_record_pct=float(min_record_pct),
-                                 phase_method=phase_method)
+                                 phase_method=phase_method, record_span_days=record_span_days)
     rec = res["record"]
-    settings = {"yr_type": yr_type, "min_year_pct": min_year_pct,
+    settings = {"yr_type": yr_type, "min_year_pct": min_year_pct, "max_gap_days": max_gap_days,
                 "min_record_pct": min_record_pct, "water_min_C": water_min_C,
-                "min_coverage": min_coverage, "interval_min": interval_min,
-                "phase_method": phase_method}
+                "interval_min": interval_min, "phase_method": phase_method}
     return AnnualResult(daily, rec, res["yearly"], res["fits"], settings)
 
 
@@ -370,6 +378,7 @@ def run_summary(res, data=None, pairs=None, date_range=None):
             r = rec[rec["site_id"] == sid] if len(rec) else rec
             row.update({"year_type": s.get("yr_type"),
                         "min_year_pct": s.get("min_year_pct"),
+                        "max_gap_days": s.get("max_gap_days"),
                         "min_record_pct": s.get("min_record_pct"),
                         "annual_n_days": int(r["n_days_fit"].iloc[0]) if len(r) else 0})
             for c in ["AmpRatio", "PhaseLag_d", "Ratio_Mean", "TS__Slope", "TS_AdjRsqr",
@@ -410,8 +419,12 @@ def run_loggers(loggers, pairs=None, analyses=ANALYSES, date_range="all", interv
                 (site_id, stream, air); suggested by pair_loggers() when None.
     date_range: 'all' (each site's full record), 'common' (only dates every site
                 has paired data) or (start, end) dates, inclusive.
-    kwargs:     settings for run_annual() / run_diel() (water_min_C, min_coverage,
-                phase_method, yr_type, min_year_pct, min_record_pct, r2_min, roll_k).
+    kwargs:     settings for run_annual() / run_diel() (water_min_C, min_coverage (diel),
+                phase_method, yr_type, min_year_pct, max_gap_days, min_record_pct, r2_min,
+                roll_k).
+
+    The annual whole-record span (record_span_days) is the longer of each site's
+    stream and air records for 'all', else the chosen date range.
 
     Returns PastaResult with pairs, coverage (per site in the range) and date_range set.
     """
@@ -424,10 +437,13 @@ def run_loggers(loggers, pairs=None, analyses=ANALYSES, date_range="all", interv
                          + ", ".join(pair_table["site_id"][pair_table["site_id"].duplicated()]))
     cov = _coverage(loggers, pair_table, interval_min)
     start, end = _date_range(cov, date_range)
+    spans = _record_spans(cov, start, end, date_range)
     data = pair_data(_clip_loggers(loggers, start, end), pair_table)
+    if "annual" in tuple(a.lower() for a in analyses):
+        kwargs.setdefault("record_span_days", spans)
     res = run_pasta(data, analyses=analyses, interval_min=interval_min, **kwargs)
     res.pairs = pair_table
-    res.coverage = _coverage_in_range(cov, start, end)
+    res.coverage = _coverage_in_range(cov, start, end, spans)
     res.date_range = (start, end)
     res.summary = run_summary(res, data, pairs=pair_table, date_range=(start, end))
     return res
